@@ -1,0 +1,1 @@
+ALTER TABLE `contract_symbols` ADD `price_tick_size` real DEFAULT 1e-8 NOT NULL;

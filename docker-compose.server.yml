@@ -1,0 +1,226 @@
+name: nexus-quant-contract-trader
+
+services:
+  nexus-quant:
+    image: nexus-quant-contract-trader:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: nexus-quant-contract-trader
+    restart: unless-stopped
+    mem_limit: 4g
+    mem_reservation: 1g
+    # This preserves the production IP/port while preventing direct HTTP live control.
+    ports:
+      - "61527:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NQ_COOKIE_SECURE: "false"
+      NQ_RELEASE_ID: "${NQ_RELEASE_ID:-local}"
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    depends_on:
+      binance-proxy:
+        condition: service_healthy
+    volumes:
+      - /opt/nexus-quant-contract-trader/data/wrangler:/var/lib/nexus-quant/wrangler
+    healthcheck:
+      test: ["CMD", "node", "/app/deploy/app-healthcheck.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  binance-proxy:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-binance-proxy
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/binance-proxy.mjs"]
+    environment:
+      PORT: 3100
+      NQ_BINANCE_REST_WEIGHT_LIMIT: "800"
+      NQ_BINANCE_OBSERVATION_WEIGHT_LIMIT: "500"
+      NQ_BINANCE_GLOBAL_IP_WEIGHT_LIMIT: "2200"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3100/health').then(async r=>{const x=await r.json();if(!r.ok||!x.ok||!x.websocketConnected||!Number.isFinite(x.marketAgeMs)||x.marketAgeMs>5000)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  live-risk-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-live-risk
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/live-risk-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_LIVE_RISK_URL: http://nexus-quant:3000/api/internal/live-risk
+      NQ_RUNNER_HEALTH_PORT: "3201"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3201/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      # The first protection request loads the full production route and the
+      # persisted position ledger after an image replacement. Give that cold
+      # start enough time to finish; normal health still requires a successful
+      # cycle within 45 seconds and keeps the five-second cadence unchanged.
+      retries: 12
+      start_period: 90s
+
+  account-audit-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-account-audit
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/account-audit-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_ACCOUNT_AUDIT_URL: http://nexus-quant:3000/api/internal/live-risk?mode=account-audit
+      NQ_ACCOUNT_FUNDING_AUDIT_URL: http://nexus-quant:3000/api/internal/account-funding-audit
+      NQ_STRATEGY_LEARNING_URL: http://nexus-quant:3000/api/internal/live-risk?mode=strategy-learning
+      NQ_RUNNER_HEALTH_PORT: "3205"
+      NQ_ACCOUNT_AUDIT_INTERVAL_MS: "30000"
+      NQ_ACCOUNT_AUDIT_INITIAL_DELAY_MS: "15000"
+      NQ_ACCOUNT_AUDIT_TIMEOUT_MS: "180000"
+      NQ_ACCOUNT_FUNDING_AUDIT_TIMEOUT_MS: "45000"
+      NQ_STRATEGY_LEARNING_INTERVAL_MS: "30000"
+      NQ_STRATEGY_LEARNING_TIMEOUT_MS: "60000"
+      NQ_STRATEGY_LEARNING_INITIAL_DELAY_MS: "15000"
+      NQ_ACCOUNT_RECONCILIATION_INTERVAL_MS: "300000"
+      NQ_ACCOUNT_RECONCILIATION_INITIAL_DELAY_MS: "45000"
+      NQ_ORDER_RECONCILIATION_INTERVAL_MS: "2000"
+      NQ_ORDER_RECONCILIATION_TIMEOUT_MS: "15000"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+      live-risk-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3205/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 12
+      start_period: 210s
+
+  position-intelligence-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-position-intelligence
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/position-intelligence-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_POSITION_INTELLIGENCE_URL: http://nexus-quant:3000/api/internal/live-risk?mode=intelligence
+      NQ_RUNNER_HEALTH_PORT: "3204"
+      NQ_POSITION_INTELLIGENCE_INTERVAL_MS: "5000"
+      NQ_POSITION_INTELLIGENCE_INITIAL_DELAY_MS: "5000"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+      live-risk-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3204/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 8
+      start_period: 45s
+
+  contract-data-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-contract-data
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/contract-data-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_CONTRACT_DATA_URL: http://nexus-quant:3000/api/internal/contract-data
+      NQ_RUNNER_HEALTH_PORT: "3203"
+      NQ_CONTRACT_DATA_INTERVAL_MS: "600000"
+      NQ_CONTRACT_DATA_INITIAL_DELAY_MS: "1000"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+      binance-proxy:
+        condition: service_healthy
+      live-risk-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3203/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 8
+      start_period: 150s
+
+  liquidation-monitor-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-liquidation-monitor
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/liquidation-monitor-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_NEXUS_LONG_MONITOR_URL: http://nexus-quant:3000/api/internal/liquidation-monitor
+      NQ_NEXUS_SHORT_MONITOR_URL: http://nexus-quant:3000/api/internal/short-continuation-monitor
+      NQ_NEXUS_RELATIVE_STRENGTH_MONITOR_URL: http://nexus-quant:3000/api/internal/relative-strength-monitor
+      NQ_RUNNER_HEALTH_PORT: "3202"
+      # 全市场大脑分析使用 120 秒爆仓窗口，5 秒刷新不会漏掉窗口事件；
+      # 与 5 秒仓位保护错峰，避免两个重计算任务持续争抢主应用 CPU。
+      NQ_NEXUS_BRAIN_INTERVAL_MS: "5000"
+      NQ_NEXUS_BRAIN_INITIAL_DELAY_MS: "2500"
+      # 全市场轮转的正常完成时间已达到7-13秒。请求上限必须覆盖冷启动
+      # 与缓存未命中，但仍小于候选生命周期；避免15秒客户端中断后服务端
+      # 继续计算并与下一轮重叠。候选自身仍由30秒热观察规则独立销毁。
+      NQ_NEXUS_BRAIN_REQUEST_TIMEOUT_MS: "30000"
+      NQ_NEXUS_BRAIN_TIMEOUT_COOLDOWN_MS: "10000"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+      binance-proxy:
+        condition: service_healthy
+      # Protection owns startup priority.  Market-wide analysis must not
+      # compete with the first close heartbeat after a release switch.
+      live-risk-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3202/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  simple-rebound-runner:
+    image: nexus-quant-contract-trader:latest
+    container_name: nexus-quant-contract-trader-simple-rebound
+    restart: unless-stopped
+    entrypoint: ["node", "/app/deploy/simple-rebound-runner.mjs"]
+    env_file:
+      - /opt/nexus-quant-contract-trader/secrets/runtime.env
+    environment:
+      NQ_SIMPLE_REBOUND_URL: http://nexus-quant:3000/api/internal/simple-rebound
+      NQ_SIMPLE_REBOUND_INTERVAL_MS: "2000"
+      NQ_SIMPLE_REBOUND_TIMEOUT_MS: "15000"
+      NQ_RUNNER_HEALTH_PORT: "3206"
+    depends_on:
+      nexus-quant:
+        condition: service_healthy
+      binance-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3206/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 20s

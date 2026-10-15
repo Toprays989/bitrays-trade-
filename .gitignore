@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.vinext/
+.wrangler/
+.deploy/
+.next/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+test-results/
+

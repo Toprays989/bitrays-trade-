@@ -1,0 +1,1 @@
+ALTER TABLE `shadow_orders` ADD `leverage` integer DEFAULT 5 NOT NULL;

@@ -1,0 +1,41 @@
+CREATE TABLE `execution_quote_shadows` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`record_key` text NOT NULL,
+	`quote_role` text NOT NULL,
+	`live_order_event_id` integer,
+	`position_id` integer,
+	`position_addition_id` integer,
+	`client_order_id` text NOT NULL,
+	`owner_email` text NOT NULL,
+	`account_id` text NOT NULL,
+	`strategy_id` integer,
+	`trace_id` text,
+	`origin` text NOT NULL,
+	`symbol` text NOT NULL,
+	`side` text NOT NULL,
+	`position_side` text NOT NULL,
+	`actual_order_type` text NOT NULL,
+	`actual_requested_price` real NOT NULL,
+	`decision_mark_price` real NOT NULL,
+	`executable_reference_price` real NOT NULL,
+	`atr_5m` real,
+	`price_tick_size` real NOT NULL,
+	`shadow_reservation_price` real NOT NULL,
+	`shadow_quote_price` real NOT NULL,
+	`actual_distance_bps` real NOT NULL,
+	`shadow_distance_bps` real NOT NULL,
+	`theoretical_improvement_bps` real NOT NULL,
+	`shadow_immediately_marketable` integer DEFAULT false NOT NULL,
+	`model_version` text NOT NULL,
+	`model_json` text DEFAULT '{}' NOT NULL,
+	`operator_verdict` text DEFAULT 'UNREVIEWED' NOT NULL,
+	`operator_comment` text,
+	`reviewed_by` text,
+	`reviewed_at` integer,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `execution_quote_shadows_record_uidx` ON `execution_quote_shadows` (`record_key`);--> statement-breakpoint
+CREATE INDEX `execution_quote_shadows_owner_created_idx` ON `execution_quote_shadows` (`owner_email`,`created_at`);--> statement-breakpoint
+CREATE INDEX `execution_quote_shadows_account_created_idx` ON `execution_quote_shadows` (`account_id`,`created_at`);

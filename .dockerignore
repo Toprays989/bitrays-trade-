@@ -1,0 +1,16 @@
+.git
+.next
+.vinext
+.wrangler
+.deploy-test-state
+data
+dist
+node_modules
+npm-debug.log*
+.env*
+release-artifacts
+server-backups
+tests
+research
+*.tar.gz
+服务器.txt

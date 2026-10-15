@@ -1,0 +1,1 @@
+ALTER TABLE `simulated_positions` ADD `exit_reason` text;

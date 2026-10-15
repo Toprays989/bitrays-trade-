@@ -1,0 +1,1 @@
+ALTER TABLE `risk_states` ADD `risk_heartbeat_at` integer;

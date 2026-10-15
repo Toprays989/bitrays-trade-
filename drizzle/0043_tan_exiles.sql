@@ -1,0 +1,1 @@
+ALTER TABLE `execution_intents` ADD `risk_budget_usdt` real DEFAULT 0 NOT NULL;

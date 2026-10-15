@@ -1,0 +1,1 @@
+ALTER TABLE `trading_accounts` ADD `max_symbol_margin_percent` real DEFAULT 35 NOT NULL;

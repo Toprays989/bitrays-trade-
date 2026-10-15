@@ -1,0 +1,41 @@
+FROM node:22-bookworm-slim AS deps
+LABEL com.nexusquant.project=nexus-quant-contract-trader \
+      com.nexusquant.stage=deps
+WORKDIR /app
+ENV npm_config_jobs=2 \
+    npm_config_maxsockets=4 \
+    NODE_OPTIONS=--max-old-space-size=1024
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+FROM deps AS build
+LABEL com.nexusquant.project=nexus-quant-contract-trader \
+      com.nexusquant.stage=build
+COPY . .
+RUN npm run build
+
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=3000 \
+    NQ_COOKIE_SECURE=false \
+    MINIFLARE_CACHE_DIR=/var/lib/nexus-quant/wrangler/cache \
+    WRANGLER_LOG=none \
+    WRANGLER_WRITE_LOGS=false \
+    WRANGLER_SEND_METRICS=false
+LABEL com.nexusquant.project=nexus-quant-contract-trader \
+      com.nexusquant.stage=runtime \
+      com.nexusquant.layout=thin-runtime-v1
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json package-lock.json ./
+COPY deploy ./deploy
+COPY lib/position-intelligence-coverage.mjs ./lib/position-intelligence-coverage.mjs
+COPY drizzle ./drizzle
+COPY wrangler.server.jsonc ./wrangler.server.jsonc
+COPY --from=build /app/dist ./dist
+RUN chmod +x /app/deploy/server-entrypoint.sh
+ARG NQ_RELEASE_ID=local
+ENV NQ_RELEASE_ID=${NQ_RELEASE_ID}
+LABEL com.nexusquant.release=${NQ_RELEASE_ID}
+EXPOSE 3000
+ENTRYPOINT ["/app/deploy/server-entrypoint.sh"]

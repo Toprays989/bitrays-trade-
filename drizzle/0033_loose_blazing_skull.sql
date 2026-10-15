@@ -1,0 +1,1 @@
+ALTER TABLE `contract_symbols` ADD `min_notional_usdt` real DEFAULT 5 NOT NULL;

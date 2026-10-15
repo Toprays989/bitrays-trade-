@@ -1,0 +1,1 @@
+ALTER TABLE `trading_accounts` ADD `reserve_percent` real DEFAULT 10 NOT NULL;

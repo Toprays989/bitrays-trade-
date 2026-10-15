@@ -1,0 +1,1 @@
+ALTER TABLE `automation_schedules` ADD `last_heartbeat_at` integer;
