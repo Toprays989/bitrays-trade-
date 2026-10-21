@@ -38,6 +38,21 @@ export function PaperTradingView({ setToast }: { setToast: (message: string) => 
     return () => window.clearTimeout(timer);
   }, [load, setToast]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void fetch("/api/control/paper-trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "EVALUATE_PROTECTION" }) })
+        .then((response) => response.json() as Promise<{ triggered?: Array<{ symbol: string; reason: string }> }>)
+        .then((payload) => {
+          if (payload.triggered?.length) {
+            setToast(payload.triggered.map((item) => `${item.symbol} ${item.reason === "TAKE_PROFIT" ? "止盈" : "止损"}`).join("；"));
+            void load();
+          }
+        })
+        .catch(() => undefined);
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [load, setToast]);
+
   async function submit(body: Record<string, unknown>, success: string) {
     setBusy(true);
     try {

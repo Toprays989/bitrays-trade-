@@ -22,6 +22,11 @@ function positive(value: unknown) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function plan(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0).slice(0, 20);
+}
+
 export async function GET(request: Request) {
   const user = await requirePermission(request, "trade:dashboard:view");
   if (isResponse(user)) return user;
@@ -58,6 +63,31 @@ export async function POST(request: Request) {
   const db = getDb();
   const now = new Date();
 
+  if (action === "EVALUATE_PROTECTION") {
+    const open = await db.select().from(paperPositions).where(and(eq(paperPositions.ownerEmail, user.email), eq(paperPositions.status, "OPEN")));
+    const marks = await getBinanceLiveMarkPrices([...new Set(open.map((position) => position.symbol))]);
+    const markBySymbol = new Map(marks.map((item) => [item.symbol, Number(item.markPrice)]));
+    const triggered: Array<{ id: number; symbol: string; reason: "TAKE_PROFIT" | "STOP_LOSS"; price: number; pnl: number }> = [];
+    for (const position of open) {
+      const mark = markBySymbol.get(position.symbol);
+      if (!Number.isFinite(mark) || mark <= 0) continue;
+      const take = plan(JSON.parse(position.takeProfitPlanJson || "[]"));
+      const stop = plan(JSON.parse(position.stopLossPlanJson || "[]"));
+      const hitTake = position.direction === "LONG" ? take.some((level) => mark >= level) : take.some((level) => mark <= level);
+      const hitStop = position.direction === "LONG" ? stop.some((level) => mark <= level) : stop.some((level) => mark >= level);
+      const reason = hitStop ? "STOP_LOSS" : hitTake ? "TAKE_PROFIT" : null;
+      if (!reason) continue;
+      const pnl = position.direction === "LONG" ? (mark - position.entryPrice) * position.quantity : (position.entryPrice - mark) * position.quantity;
+      const [account] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.id, position.paperAccountId), eq(paperAccounts.ownerEmail, user.email))).limit(1);
+      if (!account) continue;
+      const fee = position.quantity * mark * account.feeRateBps / 10_000;
+      await db.update(paperPositions).set({ quantity: 0, realizedPnlUsdt: position.realizedPnlUsdt + pnl, status: "CLOSED", exitReason: reason, updatedAt: now }).where(eq(paperPositions.id, position.id));
+      await db.update(paperAccounts).set({ balanceUsdt: account.balanceUsdt + pnl - fee, availableBalanceUsdt: account.availableBalanceUsdt + pnl - fee, updatedAt: now }).where(eq(paperAccounts.id, account.id));
+      triggered.push({ id: position.id, symbol: position.symbol, reason, price: mark, pnl: pnl - fee });
+    }
+    return Response.json({ environment: "PAPER", triggered });
+  }
+
   if (action === "CREATE_ACCOUNT") {
     const accountId = typeof body.accountId === "string" ? body.accountId.trim().toUpperCase() : "";
     const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -86,6 +116,8 @@ export async function POST(request: Request) {
   const orderType = body.orderType === "LIMIT" ? "LIMIT" : body.orderType === "MARKET" ? "MARKET" : null;
   const quantity = positive(body.quantity);
   const limitPrice = positive(body.limitPrice);
+  const takeProfitPlan = plan(body.takeProfitPlan);
+  const stopLossPlan = plan(body.stopLossPlan);
   if (!/^PAPER-[A-Z0-9_-]{1,20}$/.test(accountId) || !/^[A-Z0-9]{3,20}USDT$/.test(symbol) || !direction || !orderType || !quantity || (orderType === "LIMIT" && !limitPrice))
     return Response.json({ error: "虚拟订单参数无效" }, { status: 400 });
   const [account] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, user.email), eq(paperAccounts.accountId, accountId))).limit(1);
@@ -124,7 +156,7 @@ export async function POST(request: Request) {
   await db.insert(paperFills).values({ ownerEmail: user.email, paperAccountId: account.id, paperOrderId: order.id, symbol, direction, quantity, price: fillPrice, feeUsdt: fee, createdAt: now });
   const [position] = await db.select().from(paperPositions).where(and(eq(paperPositions.paperAccountId, account.id), eq(paperPositions.symbol, symbol), eq(paperPositions.status, "OPEN"))).limit(1);
   if (!position) {
-    await db.insert(paperPositions).values({ ownerEmail: user.email, paperAccountId: account.id, symbol, direction, quantity, entryPrice: fillPrice, openedAt: now, updatedAt: now });
+    await db.insert(paperPositions).values({ ownerEmail: user.email, paperAccountId: account.id, symbol, direction, quantity, entryPrice: fillPrice, takeProfitPlanJson: JSON.stringify(takeProfitPlan), stopLossPlanJson: JSON.stringify(stopLossPlan), openedAt: now, updatedAt: now });
   } else if (position.direction === direction) {
     const nextQuantity = position.quantity + quantity;
     const nextEntry = (position.entryPrice * position.quantity + fillPrice * quantity) / nextQuantity;
@@ -134,7 +166,7 @@ export async function POST(request: Request) {
     const pnl = position.direction === "LONG" ? (fillPrice - position.entryPrice) * closingQuantity : (position.entryPrice - fillPrice) * closingQuantity;
     const remaining = position.quantity - closingQuantity;
     await db.update(paperPositions).set({ quantity: remaining, realizedPnlUsdt: position.realizedPnlUsdt + pnl, status: remaining > 0 ? "OPEN" : "CLOSED", updatedAt: now }).where(eq(paperPositions.id, position.id));
-    if (quantity > closingQuantity) await db.insert(paperPositions).values({ ownerEmail: user.email, paperAccountId: account.id, symbol, direction, quantity: quantity - closingQuantity, entryPrice: fillPrice, openedAt: now, updatedAt: now });
+    if (quantity > closingQuantity) await db.insert(paperPositions).values({ ownerEmail: user.email, paperAccountId: account.id, symbol, direction, quantity: quantity - closingQuantity, entryPrice: fillPrice, takeProfitPlanJson: JSON.stringify(takeProfitPlan), stopLossPlanJson: JSON.stringify(stopLossPlan), openedAt: now, updatedAt: now });
   }
   await db.update(paperAccounts).set({ balanceUsdt: account.balanceUsdt - fee, availableBalanceUsdt: account.availableBalanceUsdt - fee, updatedAt: now }).where(eq(paperAccounts.id, account.id));
   return Response.json({ environment: "PAPER", order: { ...order, feeUsdt: fee, fillPrice }, fill: { quantity, price: fillPrice, feeUsdt: fee } }, { status: 201 });
