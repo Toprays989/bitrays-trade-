@@ -1867,6 +1867,9 @@ nav::-webkit-scrollbar-thumb {
   cursor: pointer;
 }
 .table-action-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.paper-direction-selected { margin-left: 8px; color: var(--accent); font-size: 12px; }
+.paper-close-action { min-width: 72px; color: #fca5a5; border-color: #991b1b; font-weight: 700; }
+.paper-close-action:disabled { opacity: .55; cursor: wait; }
 .paper-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
