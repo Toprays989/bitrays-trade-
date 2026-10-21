@@ -42,6 +42,7 @@ import { createMarkPriceHistory } from "./mark-price-history.mjs";
 
 const TARGETS = {
   live: "https://fapi.binance.com",
+  spot: "https://api.binance.com",
 };
 const MARKET_STREAM_URL =
   "wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s/!ticker@arr/!forceOrder@arr";
@@ -165,11 +166,13 @@ let marketConnectedAt = 0;
 let marketLastMessageAt = 0;
 let reconnectAttempt = 0;
 let reconnectTimer = null;
+let marketStaleRecoveryAt = 0;
 let bookSocket = null;
 let bookConnectedAt = 0;
 let bookLastMessageAt = 0;
 let bookReconnectAttempt = 0;
 let bookReconnectTimer = null;
+let bookStaleRecoveryAt = 0;
 let bookRequestSequence = 0;
 
 function apiKeyScope(apiKey) {
@@ -763,6 +766,15 @@ function parseMarketMessage(event) {
     const rows = Array.isArray(message.data) ? message.data : [];
     const receivedAt = Date.now();
     if (message.stream === "!markPrice@arr@1s") {
+      // The weekly protection baseline must warm up while the account is
+      // empty as well. Keep the existing short history semantics, but mark
+      // the full WebSocket universe as watched before recording daily ranges.
+      markPriceHistory.watch(
+        rows
+          .filter((row) => typeof row.s === "string")
+          .map((row) => row.s),
+        receivedAt,
+      );
       for (const row of rows) {
         if (row.st !== undefined && row.st !== 1) continue;
         const markPrice = Number(row.p);
@@ -1118,6 +1130,34 @@ function connectBookStream() {
   socket.addEventListener("error", () => retireBookSocket(socket));
 }
 
+function monitorWebSocketFreshness(now = Date.now()) {
+  if (
+    marketSocket?.readyState === WebSocket.OPEN &&
+    marketConnectedAt > 0 &&
+    now - Math.max(marketLastMessageAt, marketConnectedAt) > MARKET_STALE_MS
+  ) {
+    marketStaleRecoveryAt = now;
+    // A socket can remain OPEN while its upstream stream is silently dead.
+    // Recycle it so the existing single-flight reconnect path can recover the
+    // complete mark/ticker/liquidation feed instead of serving stale data.
+    const staleSocket = marketSocket;
+    try { staleSocket.close(4000, "stale-market-stream"); } catch { /* reconnect below */ }
+    retireMarketSocket(staleSocket);
+  }
+  const watchedBooks = activeBookSymbols(now).length || activeOrderFlowSymbols(now).length;
+  if (
+    watchedBooks > 0 &&
+    bookSocket?.readyState === WebSocket.OPEN &&
+    bookConnectedAt > 0 &&
+    now - Math.max(bookLastMessageAt, bookConnectedAt) > NEXUS_BOOK_STALE_MS
+  ) {
+    bookStaleRecoveryAt = now;
+    const staleSocket = bookSocket;
+    try { staleSocket.close(4000, "stale-book-stream"); } catch { /* reconnect below */ }
+    retireBookSocket(staleSocket);
+  }
+}
+
 async function ensureExchangeInfo() {
   if (exchangeSymbols.size && exchangeInfoUpdatedAt > Date.now() - EXCHANGE_INFO_TTL_MS)
     return exchangeSymbols;
@@ -1189,6 +1229,23 @@ function handleMarkPrices(incoming, response) {
         ? { history: markPriceHistory.snapshot(row.symbol, freshness.now) }
         : {}),
     })),
+  });
+}
+
+function handleMarketVolatility(incoming, response) {
+  const symbols = (incoming.searchParams.get("symbols") || "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  if (!symbols.length) return json(response, 400, { error: "缺少合约代码" });
+  const windowDays = Math.min(7, Math.max(3, Number(incoming.searchParams.get("days") || 7)));
+  const rows = symbols.map((symbol) => markPriceHistory.volatility(symbol, Date.now(), windowDays));
+  recordStat("GET", "/market/volatility", "cacheServed");
+  return json(response, 200, {
+    source: "BINANCE_WEBSOCKET_CACHE",
+    windowDays,
+    updatedAt: new Date().toISOString(),
+    rows,
   });
 }
 
@@ -1507,6 +1564,10 @@ function metricsPayload() {
       connectedAt: marketConnectedAt ? new Date(marketConnectedAt).toISOString() : null,
       lastMessageAt: marketLastMessageAt ? new Date(marketLastMessageAt).toISOString() : null,
       ageMs: marketLastMessageAt ? now - marketLastMessageAt : null,
+      reconnectAttempt,
+      staleRecoveryAt: marketStaleRecoveryAt
+        ? new Date(marketStaleRecoveryAt).toISOString()
+        : null,
       markSymbols: markPrices.size,
       tickerSymbols: tickers.size,
       liquidationEventsRetained: liquidationEvents.length,
@@ -1525,6 +1586,10 @@ function metricsPayload() {
         ? new Date(bookLastMessageAt).toISOString()
         : null,
       ageMs: bookLastMessageAt ? now - bookLastMessageAt : null,
+      reconnectAttempt: bookReconnectAttempt,
+      staleRecoveryAt: bookStaleRecoveryAt
+        ? new Date(bookStaleRecoveryAt).toISOString()
+        : null,
       watchedSymbols: activeBookSymbols(now).length,
       readySymbols: bookTickers.size,
       maxTransportLatencyMs: NEXUS_BOOK_STALE_MS,
@@ -1619,6 +1684,7 @@ async function forward(request, response) {
       return json(response, 200, { ok: true, websocketConnected: marketSocket?.readyState === WebSocket.OPEN, marketAgeMs: marketLastMessageAt ? Date.now() - marketLastMessageAt : null });
     if (incoming.pathname === "/metrics") return json(response, 200, metricsPayload());
     if (incoming.pathname === "/market/mark-prices") return handleMarkPrices(incoming, response);
+    if (incoming.pathname === "/market/volatility") return handleMarketVolatility(incoming, response);
     if (incoming.pathname === "/market/global-liquidations")
       return await handleGlobalLiquidations(response);
     if (incoming.pathname === "/market/ticker") return handleTicker(incoming, response);
@@ -1631,7 +1697,7 @@ async function forward(request, response) {
     if (incoming.pathname === "/market/contracts") return await handleContracts(response);
 
     const match = incoming.pathname.match(
-      /^\/(live)(\/(?:fapi\/v\d+\/[A-Za-z0-9/_-]+|futures\/data\/(?:openInterestHist|topLongShortPositionRatio|topLongShortAccountRatio|takerlongshortRatio)))$/,
+      /^\/(live|spot)(\/(?:fapi\/v\d+\/[A-Za-z0-9/_-]+|api\/v\d+\/[A-Za-z0-9/_-]+|futures\/data\/(?:openInterestHist|topLongShortPositionRatio|topLongShortAccountRatio|takerlongshortRatio)))$/,
     );
     if (!match || !["GET", "POST", "DELETE"].includes(request.method || "")) {
       response.writeHead(404); return response.end();
@@ -1753,6 +1819,7 @@ async function forward(request, response) {
 
 connectMarketStream();
 connectBookStream();
+setInterval(() => monitorWebSocketFreshness(), 1_000);
 ensureExchangeInfo().catch(() => {});
 setInterval(() => flushLiquidations(), 250).unref();
 setInterval(() => syncBookSubscriptions(), 5_000).unref();

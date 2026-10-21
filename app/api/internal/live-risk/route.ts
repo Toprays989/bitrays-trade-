@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lte, ne, notExists, notLike, or, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { backgroundRepairTasks, contractSymbols, exchangeCredentials, executionIntents, liveOrderEvents, livePositionAdditionEvidence, livePositionAdditions, livePositionReductions, livePositions, nexusEyeFactSnapshots, riskStates, strategies, strategyExecutionEventRollups, strategyExecutionEvents, strategyExecutionSummaries, strategyExecutionTraces, strategyLearningCycles, strategyLearningReviews, strategyParameterSuggestions, strategyPositionEvidence, tradingAccounts } from "../../../../db/schema";
-import { BinanceLiveError, LOCAL_POSITION_MISSING_CODE, getBinanceLargeTraderPositioningSnapshot, getBinanceLiveContractUniverse, getBinanceLiveKlinesRange, getBinanceLiveLiquidationEvents, getBinanceLiveMarkPriceKlinesRange, getBinanceLiveMarkPrices, getBinanceLiveOrderTrades, getBinanceLiveSystemMetrics, getLiveAccountPositionSnapshots, getLivePositionSnapshot, getLivePositionSnapshots, getNexusPrivateOrderEvents, waitForFreshNexusBookTicker } from "../../../../lib/binance-usdm-live";
+import { BinanceLiveError, LOCAL_POSITION_MISSING_CODE, getBinanceLargeTraderPositioningSnapshot, getBinanceLiveContractUniverse, getBinanceLiveKlinesRange, getBinanceLiveLiquidationEvents, getBinanceLiveMarkPriceKlinesRange, getBinanceLiveMarkPrices, getBinanceLiveOrderTrades, getBinanceLiveSystemMetrics, getLiveAccountPositionSnapshots, getLivePositionSnapshot, getLivePositionSnapshots, getNexusPrivateOrderEvents, waitForFreshNexusBookTicker, getBinanceProtectionVolatilityProfile } from "../../../../lib/binance-usdm-live";
 import { queryLiveOrder, submitLiveEntryOrder, submitLiveReduceMarketOrder } from "../../../../lib/execution/exchange-order-gateway";
 import { credentialContext, decryptCredential } from "../../../../lib/credential-vault";
 import { positionRoePercent, priceAtRoePercent } from "../../../../lib/position-roe";
@@ -252,6 +252,7 @@ import {
   revalidatePositionAdditionOpportunity,
   selectPositionAdditionLearningMark,
 } from "../../../../lib/live-position-addition";
+import { settlePositionAdditionBasis } from "../../../../lib/execution/position-addition-settlement";
 import {
   POST_ENTRY_LONG_HOLD_MINUTES,
   POST_ENTRY_MODEL_MINUTES,
@@ -2761,14 +2762,14 @@ async function maybeExecutePositionAddition(input: {
         true,
       );
     exchangeFillConfirmed = true;
-    const { combinedQuantity, combinedEntryPrice } = combinePositionAddition({
+    const combinedBasis = combinePositionAddition({
       currentQuantity: position.quantity,
       currentEntryPrice: position.entryPrice,
       addedQuantity: executedQuantity,
       addedEntryPrice: entryPrice,
     });
-    let syncedQuantity = combinedQuantity;
-    let syncedEntryPrice = combinedEntryPrice;
+    let syncedQuantity = combinedBasis.combinedQuantity;
+    let syncedEntryPrice = combinedBasis.combinedEntryPrice;
     let syncedMarkPrice = executionMarkPrice;
     let syncedLiquidationPrice = position.liquidationPrice;
     let syncedLiquidationPriceRaw = position.liquidationPriceRaw;
@@ -2783,7 +2784,7 @@ async function maybeExecutePositionAddition(input: {
       );
       if (exchangePosition.quantity > 0) {
         syncedQuantity = exchangePosition.quantity;
-        syncedEntryPrice = exchangePosition.entryPrice || combinedEntryPrice;
+        syncedEntryPrice = exchangePosition.entryPrice || combinedBasis.combinedEntryPrice;
         syncedMarkPrice = exchangePosition.markPrice || executionMarkPrice;
         syncedLiquidationPrice =
           exchangePosition.liquidationPriceStatus === "AVAILABLE"
@@ -2810,26 +2811,37 @@ async function maybeExecutePositionAddition(input: {
         minNotionalUsdt: symbol.minNotionalUsdt,
       },
     );
-    const nextPositionVersion = position.positionVersion + 1;
-    const nextProtectionVersion = position.protectionVersion + 1;
     const protectionUpdatedAt = new Date();
     const mergedRiskPlan = mergeRiskPlanWithPositionMemory(
       position.riskPlanJson,
       combinedRiskPlan,
     );
-    const postAdditionRiskPlan = rebuildProtectionAfterAddition({
-      plan: mergedRiskPlan,
-      rebalancedTakeProfits: combinedRiskPlan.takeProfits,
-      rebalancedStopLosses: combinedRiskPlan.stopLosses,
-      nextPositionVersion,
-      nextProtectionVersion,
+    const positionAdditionSettlement = settlePositionAdditionBasis({
+      currentQuantity: position.quantity,
+      currentEntryPrice: position.entryPrice,
+      addedQuantity: executedQuantity,
+      addedEntryPrice: entryPrice,
+      exchangeQuantity: syncedQuantity,
+      exchangeEntryPrice: syncedEntryPrice,
+      riskPlan: mergedRiskPlan,
+      executedRiskProgress: parseExecutedPlan(position.executedRiskPlanJson),
+      minOrderQty: symbol.minOrderQty,
+      quantityStep: symbol.quantityStep,
+      minNotionalUsdt: symbol.minNotionalUsdt,
+      trailingStopPercent: position.trailingStopPercent,
+      positionVersion: position.positionVersion,
+      protectionVersion: position.protectionVersion,
       nowMs: protectionUpdatedAt.getTime(),
       source: "AUTO_ADD_ON",
     });
-    const postAdditionProgress = reanchorProgressAfterAddition({
-      progress: parseExecutedPlan(position.executedRiskPlanJson),
-      newPositionQuantity: syncedQuantity,
-    });
+    syncedQuantity = positionAdditionSettlement.syncedQuantity;
+    syncedEntryPrice = positionAdditionSettlement.syncedEntryPrice;
+    const combinedQuantity = positionAdditionSettlement.combinedQuantity;
+    const combinedEntryPrice = positionAdditionSettlement.combinedEntryPrice;
+    const nextPositionVersion = positionAdditionSettlement.nextPositionVersion;
+    const nextProtectionVersion = positionAdditionSettlement.nextProtectionVersion;
+    const postAdditionRiskPlan = positionAdditionSettlement.riskPlan;
+    const postAdditionProgress = positionAdditionSettlement.executedRiskProgress;
     const responseJson = JSON.stringify({
       ...result.data,
       timing: result.timing,
@@ -7750,6 +7762,28 @@ export async function POST(request: Request) {
         monitoringStartRoePercent: 1,
       });
     const rawRiskPlan = asRecord(parseJson(position.riskPlanJson));
+    // The protection baseline is driven by the completed WebSocket history
+    // window. Until seven completed days exist, the configured protection
+    // values remain authoritative. A failed/stale profile must never block
+    // the existing protection loop.
+    let protectionVolatilityProfile: Awaited<
+      ReturnType<typeof getBinanceProtectionVolatilityProfile>
+    > | null = null;
+    try {
+      protectionVolatilityProfile =
+        await getBinanceProtectionVolatilityProfile(position.symbol, {
+          days: 7,
+          timeoutMs: 1_500,
+        });
+    } catch {
+      protectionVolatilityProfile = null;
+    }
+    const completedVolatilityRangePrice =
+      protectionVolatilityProfile?.complete &&
+      Number(protectionVolatilityProfile.p75RangePercent) > 0
+        ? position.entryPrice *
+          (Number(protectionVolatilityProfile.p75RangePercent) / 100)
+        : null;
     const positionMemory = readNexusPositionMemory(
       position.riskPlanJson,
       position,
@@ -7792,7 +7826,9 @@ export async function POST(request: Request) {
       leverage: position.leverage,
       currentRoePercent,
       favorableRoePercent,
-      atrPrice: riskPlanAtrPrice(position.riskPlanJson),
+      atrPrice:
+        completedVolatilityRangePrice ??
+        riskPlanAtrPrice(position.riskPlanJson),
       configuredActivationRoePercent:
         microstructureProtectionPreview.activationRoePercentOverride ??
         position.trailingActivationPercent,
@@ -7931,7 +7967,9 @@ export async function POST(request: Request) {
       leverage: position.leverage,
       currentRoePercent,
       favorableRoePercent,
-      atrPrice: riskPlanAtrPrice(position.riskPlanJson),
+      atrPrice:
+        completedVolatilityRangePrice ??
+        riskPlanAtrPrice(position.riskPlanJson),
       configuredActivationRoePercent:
         microstructureProtection.activationRoePercentOverride ??
         position.trailingActivationPercent,

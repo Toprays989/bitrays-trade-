@@ -4,7 +4,7 @@ import { getDb } from "../../../../db/index.ts";
 import { strategies, tradingAccounts, exchangeCredentials } from "../../../../db/schema.ts";
 import { loadSimpleReboundMarketRows } from "../../../../lib/simple-rebound-market-adapter.ts";
 import { loadSimpleReboundSlots, occupyPersistedSimpleReboundSlot, releasePersistedSimpleReboundSlot } from "../../../../lib/simple-rebound-slot-store.ts";
-import { runSimpleReboundCycle } from "../../../../lib/simple-rebound-runner.ts";
+import { runSimpleReboundCycle, shouldSkipSimpleReboundMarketLoad } from "../../../../lib/simple-rebound-runner.ts";
 import { appendSimpleReboundEvents } from "../../../../lib/simple-rebound-event-store.ts";
 import { SIMPLE_REBOUND_EVENT_TYPES } from "../../../../lib/simple-rebound-events.ts";
 import { getBinanceLiveContractRule } from "../../../../lib/binance-usdm-live.ts";
@@ -42,8 +42,20 @@ export async function POST(request: Request) {
   }
   const requestedStrategyId = Number(body.strategyId ?? new URL(request.url).searchParams.get("strategyId") ?? 0);
   const candidates = requestedStrategyId > 0
-    ? await getDb().select({ id: strategies.id, strategyType: strategies.strategyType, status: strategies.status }).from(strategies).where(eq(strategies.id, requestedStrategyId)).limit(1)
-    : await getDb().select({ id: strategies.id, strategyType: strategies.strategyType, status: strategies.status }).from(strategies).where(eq(strategies.strategyType, "SIMPLE_REBOUND"));
+    ? await getDb().select({
+      id: strategies.id,
+      strategyType: strategies.strategyType,
+      status: strategies.status,
+      ownerEmail: strategies.ownerEmail,
+      accountId: strategies.accountId,
+    }).from(strategies).where(eq(strategies.id, requestedStrategyId)).limit(1)
+    : await getDb().select({
+      id: strategies.id,
+      strategyType: strategies.strategyType,
+      status: strategies.status,
+      ownerEmail: strategies.ownerEmail,
+      accountId: strategies.accountId,
+    }).from(strategies).where(eq(strategies.strategyType, "SIMPLE_REBOUND"));
   if (requestedStrategyId > 0 && (!Number.isInteger(requestedStrategyId) || requestedStrategyId <= 0))
     return Response.json({ error: "strategyId 必须为正整数" }, { status: 400 });
   if (candidates.length !== 1)
@@ -55,10 +67,23 @@ export async function POST(request: Request) {
     return Response.json({ error: "该策略不是 SIMPLE_REBOUND" }, { status: 409 });
 
   const nowMs = Date.now();
-  const [market, slots] = await Promise.all([
-    loadSimpleReboundMarketRows(),
-    loadSimpleReboundSlots(strategyId),
-  ]);
+  const slots = await loadSimpleReboundSlots(strategyId);
+  if (shouldSkipSimpleReboundMarketLoad({ strategyStatus: strategy.status, slots })) {
+    return Response.json({
+      strategyId,
+      strategyStatus: strategy.status,
+      readOnly: true,
+      marketRows: 0,
+      occupiedSlots: 0,
+      signals: [],
+      orderPlans: [],
+      exits: [],
+      events: [],
+      execution: { enabled: false, attempted: 0, filled: 0, exited: 0, errors: [] },
+      marketData: { source: "BINANCE_WEBSOCKET_MARK_HISTORY_AND_TICKER_CACHE", upstreamKlineRequests: 0 },
+    });
+  }
+  const market = await loadSimpleReboundMarketRows();
   const result = runSimpleReboundCycle({ market, slots, nowMs });
   const events = [...result.events];
   if (nowMs - (lastScanLogAt.get(strategyId) ?? 0) >= 15_000) {

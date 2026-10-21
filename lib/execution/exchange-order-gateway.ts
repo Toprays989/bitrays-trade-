@@ -5,6 +5,7 @@
  */
 export {
   cancelLiveOrder,
+  getLivePositionSnapshot,
   queryLiveOrder,
   submitLiveEntryOrder,
   submitLiveReduceLimitFokOrder,

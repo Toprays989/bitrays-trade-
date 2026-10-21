@@ -5,6 +5,10 @@ const token = process.env.NQ_INTERNAL_LIQUIDATION_TOKEN || "";
 if (token.length < 32) throw new Error("NQ_INTERNAL_LIQUIDATION_TOKEN is required");
 
 const intervalMs = Math.max(2_000, Number(process.env.NQ_SIMPLE_REBOUND_INTERVAL_MS || 2_000));
+const idleIntervalMs = Math.max(
+  intervalMs,
+  Number(process.env.NQ_SIMPLE_REBOUND_IDLE_INTERVAL_MS || 30_000),
+);
 const timeoutMs = Math.max(1_000, Number(process.env.NQ_SIMPLE_REBOUND_TIMEOUT_MS || 15_000));
 const healthPort = Number(process.env.NQ_RUNNER_HEALTH_PORT || 3206);
 let running = false;
@@ -13,6 +17,7 @@ let lastAttemptAt = 0;
 let lastSuccessAt = 0;
 let lastFailure = null;
 let lastResult = null;
+let nextDelayMs = intervalMs;
 
 async function runCycle() {
   if (running) return;
@@ -33,6 +38,7 @@ async function runCycle() {
       lastFailure = null;
       lastSuccessAt = Date.now();
       lastResult = { idle: true, reason: "NO_SIMPLE_REBOUND_STRATEGY" };
+      nextDelayMs = idleIntervalMs;
       return;
     }
     if (!response.ok) throw new Error(`simple-rebound HTTP ${response.status}`);
@@ -49,11 +55,19 @@ async function runCycle() {
       execution: payload?.execution ?? null,
       marketData: payload?.marketData ?? null,
     };
+    const idle = lastResult.readOnly === true &&
+      lastResult.occupiedSlots === 0 &&
+      lastResult.signals === 0 &&
+      lastResult.orderPlans === 0 &&
+      lastResult.exits === 0;
+    nextDelayMs = idle ? idleIntervalMs : intervalMs;
   } catch (error) {
     failures += 1;
     lastFailure = error instanceof Error ? error.message : String(error);
+    nextDelayMs = Math.min(30_000, Math.max(intervalMs, intervalMs * 2 ** Math.min(failures, 4)));
   } finally {
     running = false;
+    setTimeout(() => void runCycle(), nextDelayMs);
   }
 }
 
@@ -63,8 +77,7 @@ createServer((request, response) => {
   const ok = failures === 0 && successAgeMs !== null && successAgeMs <= Math.max(timeoutMs * 2, intervalMs * 3);
   response.statusCode = ok ? 200 : 503;
   response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(JSON.stringify({ ok, status: ok ? "HEALTHY" : "DEGRADED", running, failures, lastAttemptAt: lastAttemptAt || null, lastSuccessAt: lastSuccessAt || null, successAgeMs, lastFailure, lastResult }));
+  response.end(JSON.stringify({ ok, status: ok ? "HEALTHY" : "DEGRADED", running, failures, lastAttemptAt: lastAttemptAt || null, lastSuccessAt: lastSuccessAt || null, successAgeMs, lastFailure, lastResult, idleIntervalMs, nextDelayMs }));
 }).listen(healthPort, "0.0.0.0");
 
-setInterval(() => void runCycle(), intervalMs);
 setTimeout(() => void runCycle(), 250);

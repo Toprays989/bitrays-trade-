@@ -1840,6 +1840,62 @@ nav::-webkit-scrollbar-thumb {
   display: flex;
   gap: 7px;
 }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.status-pill.positive { color: #86efac; border-color: #166534; }
+.status-pill.warning { color: #fde68a; border-color: #854d0e; }
+.status-pill.negative { color: #fca5a5; border-color: #991b1b; }
+.table-action-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--accent);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+.table-action-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.paper-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+.paper-grid .field { min-width: 0; }
+@media (max-width: 900px) {
+  .paper-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.stats-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.stats-grid span,
+.stats-grid small { color: var(--soft); font-size: 11px; }
+.stats-grid strong { font-size: 20px; }
+@media (max-width: 760px) {
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .panel-actions button,
 .primary-btn {
   padding: 7px 10px;
@@ -12434,3 +12490,5 @@ nav::-webkit-scrollbar-thumb {
   min-width: 220px;
   flex: 1 1 220px;
 }
+.environment-switcher{display:flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:10px;background:var(--panel);font-size:12px;color:var(--muted)}
+.environment-switcher select{border:0;background:transparent;color:var(--text);font-weight:700;outline:0}

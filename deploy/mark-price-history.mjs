@@ -3,6 +3,7 @@
 // requests or Binance weight.
 const DEFAULT_RETENTION_MS = 5 * 60_000;
 const DEFAULT_WATCH_TTL_MS = 2 * 60_000;
+const DEFAULT_VOLATILITY_RETENTION_MS = 8 * 24 * 60 * 60_000;
 // Keep one bounded 45-second window for the full active Binance futures
 // universe. This data is fed by the existing WebSocket stream and does not add
 // REST weight.
@@ -28,6 +29,7 @@ export function createMarkPriceHistory(options = {}) {
   );
   const watches = new Map();
   const histories = new Map();
+  const volatilityDays = new Map();
 
   function watch(symbols, observedAtMs = Date.now()) {
     const nowMs = finiteTimestamp(observedAtMs);
@@ -73,6 +75,37 @@ export function createMarkPriceHistory(options = {}) {
     if (history.length > maximumSamplesPerSymbol)
       history.splice(0, history.length - maximumSamplesPerSymbol);
     histories.set(symbol, history);
+    const dayStartMs = Math.floor(eventAtMs / 86_400_000) * 86_400_000;
+    const cutoffDayMs = receivedAtMs - DEFAULT_VOLATILITY_RETENTION_MS;
+    const days = (volatilityDays.get(symbol) ?? []).filter(
+      (day) => day.dayStartMs >= cutoffDayMs,
+    );
+    const current = days.at(-1);
+    if (current?.dayStartMs === dayStartMs) {
+      current.low = Math.min(current.low, markPrice);
+      current.high = Math.max(current.high, markPrice);
+      current.last = markPrice;
+      current.sampleCount += 1;
+    } else {
+      const existing = days.find((day) => day.dayStartMs === dayStartMs);
+      if (existing) {
+        existing.low = Math.min(existing.low, markPrice);
+        existing.high = Math.max(existing.high, markPrice);
+        existing.last = markPrice;
+        existing.sampleCount += 1;
+        days.sort((left, right) => left.dayStartMs - right.dayStartMs);
+      } else {
+        days.push({
+          dayStartMs,
+          low: markPrice,
+          high: markPrice,
+          first: markPrice,
+          last: markPrice,
+          sampleCount: 1,
+        });
+      }
+    }
+    volatilityDays.set(symbol, days);
     return true;
   }
 
@@ -100,6 +133,23 @@ export function createMarkPriceHistory(options = {}) {
       retentionMs,
       maximumWatchedSymbols,
       maximumSamplesPerSymbol,
+      volatilitySymbols: volatilityDays.size,
+    };
+  }
+
+  function volatility(symbolInput, observedAtMs = Date.now(), windowDays = 7) {
+    const symbol = normalizedSymbol(symbolInput);
+    if (!symbol) return { symbol: "", days: [], complete: false };
+    const nowMs = finiteTimestamp(observedAtMs);
+    const currentDayStartMs = Math.floor(nowMs / 86_400_000) * 86_400_000;
+    const days = (volatilityDays.get(symbol) ?? [])
+      .filter((day) => day.dayStartMs < currentDayStartMs)
+      .slice(-Math.max(1, Math.floor(Number(windowDays) || 7)))
+      .map((day) => ({ ...day, rangePercent: ((day.high - day.low) / day.low) * 100 }));
+    return {
+      symbol,
+      days,
+      complete: days.length >= Math.max(3, Math.floor(Number(windowDays) || 7)),
     };
   }
 
@@ -108,10 +158,11 @@ export function createMarkPriceHistory(options = {}) {
       if (watchUntilMs >= nowMs) continue;
       watches.delete(symbol);
       histories.delete(symbol);
+      volatilityDays.delete(symbol);
     }
   }
 
-  return { watch, record, snapshot, metrics };
+  return { watch, record, snapshot, metrics, volatility };
 }
 
 function normalizedSymbol(value) {

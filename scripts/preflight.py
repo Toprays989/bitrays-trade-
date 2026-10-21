@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import time
 from pathlib import Path, PurePosixPath
 
 import paramiko
@@ -258,7 +259,7 @@ def remote_inventory(
     command = r'''set -e
 root=/opt/nexus-quant-contract-trader
 printf 'CURRENT=%s\n' "$(basename "$(readlink -f "$root/current")")"
-for name in nexus-quant-contract-trader nexus-quant-contract-trader-binance-proxy nexus-quant-contract-trader-live-risk nexus-quant-contract-trader-liquidation-monitor; do
+for name in nexus-quant-contract-trader nexus-quant-contract-trader-binance-proxy nexus-quant-contract-trader-live-risk nexus-quant-contract-trader-account-audit nexus-quant-contract-trader-position-intelligence nexus-quant-contract-trader-contract-data nexus-quant-contract-trader-liquidation-monitor nexus-quant-contract-trader-simple-rebound nexus-quant-contract-trader-manual-grid; do
   health_json="$(docker inspect -f '{{json .State.Health}}' "$name")"
   if [ "$health_json" = null ]; then health=none; else health="$(docker inspect -f '{{.State.Health.Status}}' "$name")"; fi
   printf 'CONTAINER=%s|%s|%s|%s\n' "$name" "$(docker inspect -f '{{.Id}}' "$name")" "$(docker inspect -f '{{.State.Status}}' "$name")" "$health"
@@ -272,16 +273,21 @@ printf 'DISK_AVAILABLE_MB=%s\n' "$(df -Pm "$root" | awk 'NR==2 {print $4}')"
 printf 'LOAD1=%s\n' "$(awk '{print $1}' /proc/loadavg)"
 docker ps --format 'OTHER={{.Names}}|{{.ID}}' | grep -v '^OTHER=nexus-quant-contract-trader' | sort || true
 '''
-    lines = remote_run(client, command).splitlines()
-    result: dict[str, object] = {"containers": [], "other_containers": []}
-    for line in lines:
-        key, _, value = line.partition("=")
-        if key == "CONTAINER":
-            result["containers"].append(value)
-        elif key == "OTHER":
-            result["other_containers"].append(value)
-        else:
-            result[key.lower()] = int(value) if value.isdigit() else value
+    def collect() -> tuple[dict[str, object], dict[str, tuple[str, str]]]:
+        lines = remote_run(client, command).splitlines()
+        result: dict[str, object] = {"containers": [], "other_containers": []}
+        for line in lines:
+            key, _, value = line.partition("=")
+            if key == "CONTAINER":
+                result["containers"].append(value)
+            elif key == "OTHER":
+                result["other_containers"].append(value)
+            else:
+                result[key.lower()] = int(value) if value.isdigit() else value
+        parsed = {entry.split("|", 1)[0]: tuple(entry.split("|")[2:4]) for entry in result["containers"]}
+        return result, parsed
+
+    result, parsed = collect()
     if result.get("app_http") != 200 or result.get("app_auth") != 401:
         raise RuntimeError("生产应用内部 HTTP 或登录状态异常")
     if result.get("incoming") != 0:
@@ -296,10 +302,14 @@ docker ps --format 'OTHER={{.Names}}|{{.ID}}' | grep -v '^OTHER=nexus-quant-cont
         "nexus-quant-contract-trader": ("running", "healthy"),
         "nexus-quant-contract-trader-binance-proxy": ("running", "healthy"),
     }
-    parsed = {entry.split("|", 1)[0]: tuple(entry.split("|")[2:4]) for entry in result["containers"]}
     runner_names = (
         "nexus-quant-contract-trader-live-risk",
+        "nexus-quant-contract-trader-account-audit",
+        "nexus-quant-contract-trader-position-intelligence",
+        "nexus-quant-contract-trader-contract-data",
         "nexus-quant-contract-trader-liquidation-monitor",
+        "nexus-quant-contract-trader-simple-rebound",
+        "nexus-quant-contract-trader-manual-grid",
     )
     allowed_runner_states = {
         name: (
@@ -318,7 +328,17 @@ docker ps --format 'OTHER={{.Names}}|{{.ID}}' | grep -v '^OTHER=nexus-quant-cont
         or not runners_valid
         or set(parsed) != {*expected, *runner_names}
     ):
-        raise RuntimeError(f"生产容器状态异常：{parsed}")
+        # Docker may briefly return a partial inspect set while compose is
+        # recreating a dependent runner. Re-read once before failing the gate.
+        time.sleep(5)
+        result, parsed = collect()
+        runners_valid = all(parsed.get(name) in allowed_runner_states[name] for name in runner_names)
+        if (
+            any(parsed.get(name) != state for name, state in expected.items())
+            or not runners_valid
+            or set(parsed) != {*expected, *runner_names}
+        ):
+            raise RuntimeError(f"生产容器状态异常：{parsed}")
     return result
 
 
@@ -376,6 +396,7 @@ for (const root of persistenceRoots) walk(root);
     const destination = `/tmp/nq-preflight-backup-${process.pid}-${index}.sqlite`;
     const source = new DatabaseSync(file, { readOnly: true });
     try {
+      source.exec("PRAGMA busy_timeout=5000");
       await backup(source, destination);
     } finally {
       source.close();
@@ -398,9 +419,9 @@ while IFS=$'\t' read -r relative temporary; do
 done
 
 [ "$(find "$snapshot/data" -type f -name '*.sqlite' | wc -l)" -ge 1 ]
-tar -chzf - -C "$root" current -C "$snapshot" data
+GZIP=-1 tar -chzf - -C "$root" current -C "$snapshot" data
 '''
-    _, stdout, stderr = client.exec_command(command, timeout=300)
+    _, stdout, stderr = client.exec_command(command, timeout=3600)
     payload = stdout.read()
     error = stderr.read().decode("utf-8", errors="replace")
     status = stdout.channel.recv_exit_status()

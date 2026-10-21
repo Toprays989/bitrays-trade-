@@ -189,6 +189,9 @@ import { SemiAutoOpportunityView } from "./components/semi-auto-opportunity-view
 import { MovingProtectionReviewCard } from "./components/moving-protection-review-card";
 import { DailyOperationsView } from "./components/daily-operations-view";
 import { ManualOrderBoard } from "./components/manual-order-board";
+import { ChallengeView } from "./components/challenge-view";
+import { WallTrendView, type WallTrendHandoff } from "./components/wall-trend-view";
+import { PaperTradingView } from "./components/paper-trading-view";
 
 type Market = {
   symbol: string;
@@ -256,6 +259,9 @@ const menuGroups = [
       ["overview", "⌁", "运营总览"],
       ["market", "⌇", "行情中心"],
       ["manual", "↗", "人工下单"],
+      ["challenge", "◇", "挑战赛"],
+      ["wallTrend", "⇅", "买卖墙趋势"],
+      ["paperTrading", "▣", "虚拟盘测试"],
       ["semiAuto", "◉", "半自动下单"],
       ["position", "◫", "仓位管理"],
       ["orders", "≡", "订单状态"],
@@ -292,6 +298,9 @@ const pagePermissions: Record<string, string> = {
   overview: "trade:dashboard:view",
   market: "trade:dashboard:view",
   manual: "trade:manual:create",
+  challenge: "trade:dashboard:view",
+  wallTrend: "trade:dashboard:view",
+  paperTrading: "trade:dashboard:view",
   semiAuto: "trade:manual:create",
   pool: "trade:symbol_pool:view",
   auto: "trade:strategy:edit",
@@ -326,6 +335,7 @@ function WorkspacePage({
   marketFocus?: { symbol: string; requestId: number } | null;
   strategyLogTabOpen: boolean;
 }) {
+  const [wallTrendHandoff, setWallTrendHandoff] = useState<WallTrendHandoff | null>(null);
   const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
   const [orderType, setOrderType] = useState<"市价单" | "限价单">("市价单");
   const [orderAccountId, setOrderAccountId] = useState("");
@@ -496,6 +506,7 @@ function WorkspacePage({
     accountType: "STRATEGY" as "MAIN" | "STRATEGY",
     operatorName: "管理员",
     note: "",
+    exchange: "BINANCE_USDM" as "BINANCE_USDM" | "BINANCE_SPOT",
     apiKey: "",
     secretKey: "",
   });
@@ -514,6 +525,7 @@ function WorkspacePage({
   const [credentialBusy, setCredentialBusy] = useState("");
   const [credentialForm, setCredentialForm] = useState({
     accountId: "bys-main",
+    exchange: "BINANCE_USDM" as "BINANCE_USDM" | "BINANCE_SPOT",
     label: "Binance 账户密钥",
     apiKey: "",
     secretKey: "",
@@ -2850,6 +2862,7 @@ function WorkspacePage({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               accountId: tradingAccountForm.accountId,
+              exchange: tradingAccountForm.exchange,
               label: `${tradingAccountForm.name} AppKey`,
               apiKey: tradingAccountForm.apiKey,
               secretKey: tradingAccountForm.secretKey,
@@ -2871,6 +2884,7 @@ function WorkspacePage({
         accountType: "STRATEGY",
         operatorName: "管理员",
         note: "",
+        exchange: "BINANCE_USDM",
         apiKey: "",
         secretKey: "",
       });
@@ -4177,8 +4191,27 @@ function WorkspacePage({
         setSelectedAccountId={setOrderAccountId}
         pool={pool}
         setToast={setToast}
+        executionEnvironment={executionEnvironment}
       />
     );
+
+  if (active === "challenge")
+    return <ChallengeView setToast={setToast} executionEnvironment={executionEnvironment} />;
+
+  if (active === "wallTrend")
+    return (
+      <WallTrendView
+        setToast={setToast}
+        onHandoff={(handoff) => {
+          setWallTrendHandoff(handoff);
+          setActive("semiAuto");
+          setToast(`${handoff.symbol} 已转交半自动大脑，需选择已发布大脑并人工确认`);
+        }}
+      />
+    );
+
+  if (active === "paperTrading")
+    return <PaperTradingView setToast={setToast} />;
 
   if (active === "manualLegacy")
     return (
@@ -5145,6 +5178,7 @@ function WorkspacePage({
   if (active === "semiAuto")
     return (
       <SemiAutoOpportunityView
+        key={wallTrendHandoff?.requestId ?? "semi-auto"}
         strategies={visibleConfiguredStrategies}
         markets={pool}
         credentials={exchangeCredentials}
@@ -5157,6 +5191,8 @@ function WorkspacePage({
           setToast(message);
           void Promise.all([loadPositions(true), loadLiveOrders(true)]);
         }}
+        handoff={wallTrendHandoff}
+        executionEnvironment={executionEnvironment}
       />
     );
 
@@ -10851,6 +10887,7 @@ function WorkspacePage({
                           setCredentialForm((current) => ({
                             ...current,
                             accountId,
+                            exchange: "BINANCE_USDM",
                             apiKey: "",
                             secretKey: "",
                           }));
@@ -11831,6 +11868,7 @@ function WorkspacePage({
 
 export default function Home() {
   const [active, setActive] = useState("overview");
+  const [executionEnvironment, setExecutionEnvironment] = useState<"LIVE" | "PAPER">("LIVE");
   const [workspaceRefreshVersion, setWorkspaceRefreshVersion] = useState(0);
   const [openTabs, setOpenTabs] = useState<string[]>(["overview"]);
   const [collapsed, setCollapsed] = useState(false);
@@ -12965,6 +13003,17 @@ export default function Home() {
               </span>
             </div>
             <div className="top-actions">
+              <label className="environment-switcher" title="切换业务执行环境">
+                <span>执行环境</span>
+                <select value={executionEnvironment} onChange={(event) => {
+                  const next = event.target.value === "PAPER" ? "PAPER" : "LIVE";
+                  setExecutionEnvironment(next);
+                  setToast(next === "PAPER" ? "已切换到 PAPER 虚拟盘：人工下单和半自动确认将使用虚拟账本" : "已切换到 LIVE 实盘环境：提交前仍会执行服务端风控校验");
+                }}>
+                  <option value="LIVE">LIVE 实盘</option>
+                  <option value="PAPER">PAPER 虚拟盘</option>
+                </select>
+              </label>
               <div className="global-search-shell">
                 <label className="global-search">
                   <span>⌕</span>

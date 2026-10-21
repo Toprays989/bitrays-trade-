@@ -54,6 +54,11 @@ type WindowConfig = {
   symbol: string;
   notionalUsdt: number;
   leverage: number;
+  gridEnabled: boolean;
+  gridLowerPrice: number;
+  gridUpperPrice: number;
+  gridCount: number;
+  gridHysteresisBps: number;
   takeProfitPercent: number;
   stopLossPercent: number;
   trailingEnabled: boolean;
@@ -67,6 +72,11 @@ const EMPTY_CONFIG: WindowConfig = {
   symbol: "",
   notionalUsdt: 20,
   leverage: 3,
+  gridEnabled: false,
+  gridLowerPrice: 0,
+  gridUpperPrice: 0,
+  gridCount: 5,
+  gridHysteresisBps: 5,
   takeProfitPercent: 4,
   stopLossPercent: 8,
   trailingEnabled: false,
@@ -98,6 +108,11 @@ function loadStoredConfigs(): WindowConfig[] {
         symbol: typeof source.symbol === "string" ? source.symbol.toUpperCase() : "",
         notionalUsdt: finiteNumber(source.notionalUsdt, fallback.notionalUsdt),
         leverage: Math.max(1, Math.round(finiteNumber(source.leverage, fallback.leverage))),
+        gridEnabled: source.gridEnabled === true,
+        gridLowerPrice: Math.max(0, finiteNumber(source.gridLowerPrice, fallback.gridLowerPrice)),
+        gridUpperPrice: Math.max(0, finiteNumber(source.gridUpperPrice, fallback.gridUpperPrice)),
+        gridCount: Math.max(2, Math.min(100, Math.round(finiteNumber(source.gridCount, fallback.gridCount)))),
+        gridHysteresisBps: Math.max(0, Math.min(1000, finiteNumber(source.gridHysteresisBps, fallback.gridHysteresisBps))),
         takeProfitPercent: Math.max(0.1, finiteNumber(source.takeProfitPercent, fallback.takeProfitPercent)),
         stopLossPercent: Math.max(0.1, finiteNumber(source.stopLossPercent, fallback.stopLossPercent)),
         trailingEnabled: source.trailingEnabled === true,
@@ -330,6 +345,7 @@ export function ManualOrderBoard({
   setSelectedAccountId,
   pool,
   setToast,
+  executionEnvironment = "LIVE",
 }: {
   tradingAccounts: TradingAccount[];
   exchangeCredentials: ExchangeCredential[];
@@ -337,6 +353,7 @@ export function ManualOrderBoard({
   setSelectedAccountId: (value: string) => void;
   pool: ContractPoolItem[];
   setToast: (value: string) => void;
+  executionEnvironment?: "LIVE" | "PAPER";
 }) {
   const [windowCount, setWindowCount] = useState<4 | 5 | 6>(6);
   const [columns, setColumns] = useState<2 | 3>(3);
@@ -347,8 +364,11 @@ export function ManualOrderBoard({
   const [clockNow, setClockNow] = useState(0);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState<number | null>(null);
+  const [paperAccounts, setPaperAccounts] = useState<Array<{ id: number; accountId: string; name: string; availableBalanceUsdt: number; status: string }>>([]);
+  const [paperAccountId, setPaperAccountId] = useState("");
   const [settingsIndex, setSettingsIndex] = useState<number | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<WindowConfig | null>(null);
+  const [settingsPriceDraft, setSettingsPriceDraft] = useState({ lower: "", upper: "" });
   const requestBusy = useRef(false);
   const quoteBusy = useRef(false);
 
@@ -369,6 +389,18 @@ export function ManualOrderBoard({
     [configs, windowCount],
   );
   const symbolKey = symbols.join(",");
+
+  useEffect(() => {
+    if (executionEnvironment !== "PAPER") return;
+    void fetch("/api/control/paper-trading", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => {
+        const accounts = Array.isArray(payload.accounts) ? payload.accounts.filter((item: { status?: string }) => item.status === "ACTIVE") : [];
+        setPaperAccounts(accounts);
+        setPaperAccountId((current) => current || accounts[0]?.accountId || "");
+      })
+      .catch(() => setToast("虚拟盘账户加载失败"));
+  }, [executionEnvironment, setToast]);
 
   useEffect(() => {
     setConfigs(loadStoredConfigs());
@@ -513,6 +545,10 @@ export function ManualOrderBoard({
   function openSettings(index: number) {
     setSettingsIndex(index);
     setSettingsDraft({ ...configs[index] });
+    setSettingsPriceDraft({
+      lower: configs[index].gridLowerPrice > 0 ? String(configs[index].gridLowerPrice) : "",
+      upper: configs[index].gridUpperPrice > 0 ? String(configs[index].gridUpperPrice) : "",
+    });
   }
 
   function updateSettingsDraft(patch: Partial<WindowConfig>) {
@@ -521,9 +557,15 @@ export function ManualOrderBoard({
 
   function saveSettings() {
     if (settingsIndex === null || !settingsDraft) return;
-    setConfigs((current) => current.map((config, index) => index === settingsIndex ? settingsDraft : config));
+    const nextDraft = {
+      ...settingsDraft,
+      gridLowerPrice: finiteNumber(settingsPriceDraft.lower, 0),
+      gridUpperPrice: finiteNumber(settingsPriceDraft.upper, 0),
+    };
+    setConfigs((current) => current.map((config, index) => index === settingsIndex ? nextDraft : config));
     setSettingsIndex(null);
     setSettingsDraft(null);
+    setSettingsPriceDraft({ lower: "", upper: "" });
   }
 
   async function toggleFullScreen() {
@@ -536,6 +578,7 @@ export function ManualOrderBoard({
   }
 
   function accountBlocker() {
+    if (executionEnvironment === "PAPER") return paperAccountId ? "" : "请选择 PAPER 虚拟账户";
     if (!selectedAccount) return "请选择可交易子账户";
     if (!credential) return "账户尚未绑定 Binance 密钥";
     if (!selectedAccount.tradeReadiness.liveReady) return selectedAccount.tradeReadiness.blockers.join("；") || "账户未达到实盘就绪条件";
@@ -558,14 +601,48 @@ export function ManualOrderBoard({
     if (config.notionalUsdt <= 0) return setToast("下单金额必须大于 0 USDT");
     if (quantity * price < row.rule.minNotionalUsdt - 1e-8) return setToast(`${symbol} 名义价值低于交易所最小下单金额 ${row.rule.minNotionalUsdt} USDT`);
     if (!Number.isInteger(config.leverage) || leverage < 1) return setToast("杠杆必须为大于等于 1 的整数，由 Binance 按合约档位校验上限");
-    const confirmation = `LIVE ${selectedAccountId} ${symbol} ${side === "LONG" ? "BUY" : "SELL"} ${quantity}`;
+    if (config.gridEnabled && (!Number.isFinite(config.gridLowerPrice) || !Number.isFinite(config.gridUpperPrice) || config.gridLowerPrice <= 0 || config.gridUpperPrice <= config.gridLowerPrice)) {
+      return setToast("请先设置有效的网格价格区间");
+    }
+    if (config.gridEnabled && (!Number.isInteger(config.gridCount) || config.gridCount < 2 || config.gridCount > 100)) {
+      return setToast("网格数量必须为 2 到 100 格");
+    }
+    if (executionEnvironment === "PAPER" && config.gridEnabled) return setToast("PAPER 当前支持市价和限价虚拟单，网格计划请先使用普通订单验证");
+    const confirmation = `${executionEnvironment} ${executionEnvironment === "PAPER" ? paperAccountId : selectedAccountId} ${symbol} ${side === "LONG" ? "BUY" : "SELL"} ${quantity}`;
     const action = side === "LONG" ? "做多" : "做空";
     setSubmitting(index);
     try {
-      const response = await fetch("/api/control/live-orders", {
+      if (executionEnvironment === "PAPER") {
+        const response = await fetch("/api/control/paper-trading", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "PLACE_ORDER", accountId: paperAccountId, symbol, direction: side, orderType: "MARKET", quantity, sourceBusiness: "MANUAL_ORDER" }),
+        });
+        const result = await readJsonResponse(response) as { error?: string; order?: { clientOrderId?: string } };
+        if (!response.ok) throw new Error(result.error ?? "虚拟订单提交失败");
+        setToast(`${symbol} ${action} PAPER 虚拟单已成交${result.order?.clientOrderId ? `：${result.order.clientOrderId}` : ""}`);
+        return;
+      }
+      const response = await fetch(config.gridEnabled ? "/api/control/manual-grid" : "/api/control/live-orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(config.gridEnabled ? {
+          accountId: selectedAccountId,
+          credentialId: credential!.id,
+          symbol,
+          positionSide: side,
+          lowerPrice: config.gridLowerPrice,
+          upperPrice: config.gridUpperPrice,
+          totalQuantity: quantity,
+          gridCount: config.gridCount,
+          leverage,
+          hysteresisBps: config.gridHysteresisBps,
+          takeProfitPlan: [{ triggerPercent: config.takeProfitPercent, closePercent: 100, closeQuantity: quantity }],
+          stopLossPlan: [{ triggerPercent: config.stopLossPercent, closePercent: 100, closeQuantity: quantity }],
+          capitalPreservationStopRoePercent: config.stopLossPercent,
+          trailingActivationPercent: config.trailingEnabled ? config.trailingActivationPercent : 0,
+          trailingStopPercent: config.trailingEnabled ? config.trailingDrawdownPercent : 0,
+        } : {
           credentialId: credential!.id,
           symbol,
           positionSide: side,
@@ -581,9 +658,20 @@ export function ManualOrderBoard({
           idempotencyKey: createClientRequestId().replaceAll("-", ""),
         }),
       });
-      const result = await readJsonResponse(response) as { error?: string; clientOrderId?: string; pending?: boolean };
+      const result = await readJsonResponse(response) as { error?: string; clientOrderId?: string; pending?: boolean; plan?: { id?: number } };
       if (!response.ok) throw new Error(result.error ?? "订单提交失败");
-      setToast(`${symbol} ${action}已提交统一执行链${result.clientOrderId ? `：${result.clientOrderId}` : ""}，请到订单与仓位列表确认`);
+      if (config.gridEnabled && result.plan?.id) {
+        const armResponse = await fetch("/api/control/manual-grid", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: result.plan.id, action: "ARM" }),
+        });
+        const armResult = await readJsonResponse(armResponse) as { error?: string };
+        if (!armResponse.ok) throw new Error(armResult.error ?? "网格计划已创建，但启动失败");
+        setToast(`${symbol} ${action}网格已启动：${config.gridLowerPrice} - ${config.gridUpperPrice}，共 ${config.gridCount} 格；价格触发后按统一执行链下单`);
+      } else {
+        setToast(`${symbol} ${action}已提交统一执行链${result.clientOrderId ? `：${result.clientOrderId}` : ""}，请到订单与仓位列表确认`);
+      }
     } catch (error) {
       setToast(error instanceof Error ? error.message : "订单提交失败");
     } finally {
@@ -601,11 +689,12 @@ export function ManualOrderBoard({
           <p>只负责人工下单；订单成交后自动进入平台统一持仓、结算与收益链路</p>
         </div>
         <div className="manual-board-topbar-right">
-          <span className="manual-board-live-dot"><i /> Binance 实时行情</span>
-          <label>交易子账户
-            <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value)}>
-              <option value="">请选择子账户</option>
-              {eligibleAccounts.map((account) => <option key={account.accountId} value={account.accountId}>{account.accountId} · {account.name}</option>)}
+          <span className="manual-board-live-dot"><i /> Binance 实时行情 · {executionEnvironment}</span>
+          <label>{executionEnvironment === "PAPER" ? "虚拟账户" : "交易子账户"}
+            <select value={executionEnvironment === "PAPER" ? paperAccountId : selectedAccountId} onChange={(event) => executionEnvironment === "PAPER" ? setPaperAccountId(event.target.value) : setSelectedAccountId(event.target.value)}>
+              {executionEnvironment === "PAPER" && <option value="">请选择 PAPER 账户</option>}
+              {executionEnvironment === "PAPER" ? paperAccounts.map((account) => <option key={account.accountId} value={account.accountId}>{account.accountId} · {account.name} · {account.availableBalanceUsdt.toFixed(2)} USDT</option>) : <option value="">请选择子账户</option>}
+              {executionEnvironment === "LIVE" && eligibleAccounts.map((account) => <option key={account.accountId} value={account.accountId}>{account.accountId} · {account.name}</option>)}
             </select>
           </label>
         </div>
@@ -622,7 +711,7 @@ export function ManualOrderBoard({
         <div className="manual-board-account-summary">
           <span>可用保证金 <b>{selectedAccount ? `${selectedAccount.stats.availableMargin.toFixed(2)} USDT` : "—"}</b></span>
           <span>开放仓位 <b>{selectedAccount?.stats.openPositions ?? 0}</b></span>
-          <span className={boardBlocker ? "is-blocked" : "is-ready"}>{boardBlocker ? `未就绪：${boardBlocker}` : "账户可提交"}</span>
+          <span className={boardBlocker ? "is-blocked" : "is-ready"}>{boardBlocker ? `未就绪：${boardBlocker}` : `${executionEnvironment} 账户可提交`}</span>
         </div>
         <div className="manual-board-toolbar-actions">
           <button type="button" className="secondary-btn" onClick={() => void refreshBoard()} disabled={loading}>{loading ? "刷新中…" : "↻ 刷新行情"}</button>
@@ -656,8 +745,8 @@ export function ManualOrderBoard({
                 <MiniCandleChart candles={row?.candles ?? []} interval={config.interval} markPrice={row?.markPrice ?? 0} />
                 {!row?.candles?.length && <div className="manual-board-empty-chart">{row?.chartError ? `行情暂不可用：${row.chartError}` : row ? "正在异步同步 1m K 线" : "正在同步合约行情与持仓信息"}</div>}
               </div>
-              <div className="manual-board-settings-row"><button type="button" className="manual-board-settings-btn" onClick={() => openSettings(index)}>⚙ 下单设置</button><span className="manual-board-settings-summary">金额 {config.notionalUsdt} USDT · 杠杆 {config.leverage}× · 止盈 {config.takeProfitPercent}% · 止损 {config.stopLossPercent}% · 移动止损 {config.trailingEnabled ? "开" : "关"} · 预计数量 <b>{quantity || "—"}</b> · 名义 {quantity && price ? `${(quantity * price).toFixed(2)} USDT` : "—"}</span><span className="manual-board-settings-validation">{!inPool && symbol ? "需先启用合约池" : row?.error || "统一执行链校验"}</span></div>
-              <div className="manual-board-actions"><button type="button" className="manual-board-long" disabled={disabled} onClick={() => void submitCard(index, "LONG")}>↗ 做多</button><button type="button" className="manual-board-short" disabled={disabled} onClick={() => void submitCard(index, "SHORT")}>↘ 做空</button></div>
+              <div className="manual-board-settings-row"><button type="button" className="manual-board-settings-btn" onClick={() => openSettings(index)}>⚙ 下单设置</button><span className="manual-board-settings-summary">{config.gridEnabled ? `网格 ${config.gridLowerPrice || "—"} - ${config.gridUpperPrice || "—"} · ${config.gridCount} 格` : "市价首单"} · 金额 {config.notionalUsdt} USDT · 杠杆 {config.leverage}× · 止盈 {config.takeProfitPercent}% · 止损 {config.stopLossPercent}% · 移动止损 {config.trailingEnabled ? "开" : "关"} · 预计数量 <b>{quantity || "—"}</b> · 名义 {quantity && price ? `${(quantity * price).toFixed(2)} USDT` : "—"}</span><span className="manual-board-settings-validation">{!inPool && symbol ? "需先启用合约池" : row?.error || "统一执行链校验"}</span></div>
+              <div className="manual-board-actions"><button type="button" className="manual-board-long" disabled={disabled} onClick={() => void submitCard(index, "LONG")}>{config.gridEnabled ? "↗ 启动做多网格" : "↗ 做多"}</button><button type="button" className="manual-board-short" disabled={disabled} onClick={() => void submitCard(index, "SHORT")}>{config.gridEnabled ? "↘ 启动做空网格" : "↘ 做空"}</button></div>
               <div className={`manual-board-position${!row || row.error ? " is-pending" : ""}`}>
                 {row?.positions?.length
                   ? row.positions.map((position) => <span key={`${position.positionSide}-${position.quantity}`} className={position.positionSide === "LONG" ? "is-up" : "is-down"}>{position.positionSide === "LONG" ? "多" : "空"} {position.quantity} · 入场 {formatPrice(position.entryPrice)}</span>)
@@ -673,19 +762,26 @@ export function ManualOrderBoard({
       </div>
       <datalist id="manual-board-symbols">{pool.filter((item) => item.enabled).map((item) => <option value={item.symbol} key={item.symbol}>{item.name}</option>)}</datalist>
       <p className="manual-board-note">说明：点击做多或做空即按已保存设置提交统一执行链；图表为 Binance 公开 1 分钟 K 线聚合，标记价每 2 秒从服务端 WebSocket 快照刷新。窗口配置只保存在本浏览器草稿，不保存密钥。杠杆上限由 Binance 当前合约档位实时决定；服务端仍执行账户、权限、持仓互斥、最小数量、保证金和幂等校验。</p>
-      {settingsDraft && settingsIndex !== null && <div className="manual-board-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSettingsIndex(null); setSettingsDraft(null); } }}>
+      {settingsDraft && settingsIndex !== null && <div className="manual-board-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSettingsIndex(null); setSettingsDraft(null); setSettingsPriceDraft({ lower: "", upper: "" }); } }}>
         <section className="manual-board-modal" role="dialog" aria-modal="true" aria-labelledby="manual-board-settings-title">
-          <div className="manual-board-modal-head"><div><span className="manual-board-eyebrow">ORDER SETTINGS</span><h3 id="manual-board-settings-title">窗口 {settingsIndex + 1} · 下单设置</h3></div><button type="button" aria-label="关闭设置" onClick={() => { setSettingsIndex(null); setSettingsDraft(null); }}>×</button></div>
+          <div className="manual-board-modal-head"><div><span className="manual-board-eyebrow">ORDER SETTINGS</span><h3 id="manual-board-settings-title">窗口 {settingsIndex + 1} · 下单设置</h3></div><button type="button" aria-label="关闭设置" onClick={() => { setSettingsIndex(null); setSettingsDraft(null); setSettingsPriceDraft({ lower: "", upper: "" }); }}>×</button></div>
           <div className="manual-board-modal-fields">
             <label><span>合约</span><input list="manual-board-symbols" value={settingsDraft.symbol} onChange={(event) => updateSettingsDraft({ symbol: event.target.value.toUpperCase() })} placeholder="BTCUSDT" /></label>
             <label><span>下单金额 USDT</span><input type="number" min="1" step="0.1" value={settingsDraft.notionalUsdt} onChange={(event) => updateSettingsDraft({ notionalUsdt: finiteNumber(event.target.value, settingsDraft.notionalUsdt) })} /></label>
             <label><span>杠杆</span><input type="number" min="1" step="1" value={settingsDraft.leverage} onChange={(event) => updateSettingsDraft({ leverage: finiteNumber(event.target.value, settingsDraft.leverage) })} /></label>
+            <label className="manual-board-toggle"><span>入场模式</span><button type="button" aria-pressed={settingsDraft.gridEnabled} onClick={() => updateSettingsDraft({ gridEnabled: !settingsDraft.gridEnabled })}>{settingsDraft.gridEnabled ? "价格区间网格" : "立即市价首单"}</button></label>
+            {settingsDraft.gridEnabled && <>
+              <label><span>网格下限价格</span><input type="text" inputMode="decimal" value={settingsPriceDraft.lower} onChange={(event) => { const value = event.target.value; if (/^\d*(\.\d*)?$/.test(value)) setSettingsPriceDraft((current) => ({ ...current, lower: value })); }} placeholder="例如 60000 或 0.17" /></label>
+              <label><span>网格上限价格</span><input type="text" inputMode="decimal" value={settingsPriceDraft.upper} onChange={(event) => { const value = event.target.value; if (/^\d*(\.\d*)?$/.test(value)) setSettingsPriceDraft((current) => ({ ...current, upper: value })); }} placeholder="例如 62000 或 0.18" /></label>
+              <label><span>网格格数</span><input type="number" min="2" max="100" step="1" value={settingsDraft.gridCount} onChange={(event) => updateSettingsDraft({ gridCount: Math.max(2, Math.min(100, Math.round(finiteNumber(event.target.value, settingsDraft.gridCount)))) })} /></label>
+              <label><span>触发重置容差 bps</span><input type="number" min="0" max="1000" step="1" value={settingsDraft.gridHysteresisBps} onChange={(event) => updateSettingsDraft({ gridHysteresisBps: Math.max(0, Math.min(1000, finiteNumber(event.target.value, settingsDraft.gridHysteresisBps))) })} /></label>
+            </>}
             <label><span>止盈 %</span><input type="number" min="0.1" step="0.1" value={settingsDraft.takeProfitPercent} onChange={(event) => updateSettingsDraft({ takeProfitPercent: finiteNumber(event.target.value, settingsDraft.takeProfitPercent) })} /></label>
             <label><span>止损 %</span><input type="number" min="0.1" step="0.1" value={settingsDraft.stopLossPercent} onChange={(event) => updateSettingsDraft({ stopLossPercent: finiteNumber(event.target.value, settingsDraft.stopLossPercent) })} /></label>
             <label className="manual-board-toggle"><span>移动止损</span><button type="button" aria-pressed={settingsDraft.trailingEnabled} onClick={() => updateSettingsDraft({ trailingEnabled: !settingsDraft.trailingEnabled })}>{settingsDraft.trailingEnabled ? "已开启" : "关闭"}</button></label>
           </div>
           {settingsDraft.trailingEnabled && <div className="manual-board-trailing modal-trailing"><label>激活 <input type="number" min="0.1" step="0.1" value={settingsDraft.trailingActivationPercent} onChange={(event) => updateSettingsDraft({ trailingActivationPercent: Math.max(0.1, finiteNumber(event.target.value, settingsDraft.trailingActivationPercent)) })} />%</label><label>回退 <input type="number" min="0.1" step="0.1" value={settingsDraft.trailingDrawdownPercent} onChange={(event) => updateSettingsDraft({ trailingDrawdownPercent: Math.max(0.1, finiteNumber(event.target.value, settingsDraft.trailingDrawdownPercent)) })} />%</label><span>按峰值回撤触发</span></div>}
-          <div className="manual-board-modal-actions"><button type="button" className="secondary-btn" onClick={() => { setSettingsIndex(null); setSettingsDraft(null); }}>取消</button><button type="button" className="primary-btn" onClick={saveSettings}>保存设置</button></div>
+          <div className="manual-board-modal-actions"><button type="button" className="secondary-btn" onClick={() => { setSettingsIndex(null); setSettingsDraft(null); setSettingsPriceDraft({ lower: "", upper: "" }); }}>取消</button><button type="button" className="primary-btn" onClick={saveSettings}>保存设置</button></div>
         </section>
       </div>}
     </div>

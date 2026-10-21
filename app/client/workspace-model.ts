@@ -695,6 +695,7 @@ export type TradingAccount = {
 export type ExchangeCredential = {
   id: number;
   accountId: string;
+  exchange: "BINANCE_USDM" | "BINANCE_SPOT";
   label: string;
   apiKeyMask: string;
   secretConfigured: boolean;

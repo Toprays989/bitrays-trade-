@@ -158,6 +158,7 @@ import {
   frozenExecutionExpiryReason,
   isFrozenExecutionApproval,
   MAX_FROZEN_EXECUTION_VALIDITY_MS,
+  MAX_FROZEN_EXECUTION_RENEWALS,
   renewFrozenExecutionDecision,
   resolveFrozenExecutionDeadline,
   resolveFrozenExecutionIntentExpiry,
@@ -2062,7 +2063,11 @@ export async function POST(request: Request) {
               .map((row) => row.symbol)
               .slice(0, Math.max(1, roundConfig.maxCandidatesPerRound * 2))
       ).slice(0, 20);
-      if (warmSymbols.length)
+      // The runtime reads order flow again after the market snapshot phase.
+      // Only the first pass needs a separate request to establish proxy-side
+      // subscriptions; repeating it every round adds latency without adding
+      // fresher evidence because the proxy keeps those subscriptions alive.
+      if (warmSymbols.length && previousWarmSymbols.length === 0)
         await getNexusLiveOrderFlow(warmSymbols).catch(() => null);
       const scanSymbols = threeMinuteMarketSymbolRows
         .map((row) => row.symbol)
@@ -4187,6 +4192,8 @@ async function retryFrozenLongExecutionDecisions() {
         deferredAt: now,
         waitCode: "PILOT_MARK_PRICE_WAIT",
         analysisValiditySeconds: config.trigger.analysisValiditySeconds,
+        allowRenewal: true,
+        maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
       });
       evidence.frozenExecutionDecision = renewal.decision;
       const renewedDeadline = renewal.executionExpiresAtMs;
@@ -6939,6 +6946,8 @@ async function executeConfiguredEntrySafely(
       deferredAt,
       waitCode: "LONG_EXECUTION_PIPELINE_RECOVERY_WAIT",
       analysisValiditySeconds: config.trigger.analysisValiditySeconds,
+      allowRenewal: true,
+      maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
     });
     latestEvidence.frozenExecutionDecision = renewal.decision;
     const [deferredTrace] = await getDb()
@@ -7028,6 +7037,8 @@ async function executeConfiguredEntry(
       deferredAt,
       waitCode: code,
       analysisValiditySeconds: config.trigger.analysisValiditySeconds,
+      allowRenewal: true,
+      maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
     });
     const frozenExecutionDecision = renewal.decision;
     evidence.frozenExecutionDecision = frozenExecutionDecision;

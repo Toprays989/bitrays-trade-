@@ -38,7 +38,7 @@ export function buildSimpleReboundExchangeOrder(plan: SimpleReboundOrderPlan) {
     symbol: plan.symbol,
     side: "BUY" as const,
     positionSide: "LONG" as const,
-    type: "MARKET" as const,
+    orderType: "MARKET" as const,
     quantity: plan.notionalUsdt / plan.referencePrice,
     leverage: plan.leverage,
     requireExactLeverage: true,

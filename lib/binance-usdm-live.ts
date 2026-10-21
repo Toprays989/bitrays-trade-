@@ -75,6 +75,51 @@ function marketSnapshotBaseUrl() {
   return `${proxy}/market`;
 }
 
+export type BinanceProtectionVolatilityProfile = {
+  symbol: string;
+  windowDays: number;
+  sampleDays: number;
+  complete: boolean;
+  averageRangePercent: number | null;
+  medianRangePercent: number | null;
+  p75RangePercent: number | null;
+  maximumRangePercent: number | null;
+  averageDownDayRangePercent: number | null;
+  averageCloseChangePercent: number | null;
+};
+
+const protectionVolatilityCache = new Map<string, {
+  profile: BinanceProtectionVolatilityProfile;
+  expiresAt: number;
+}>();
+
+export async function getBinanceProtectionVolatilityProfile(
+  symbol: string,
+  options?: { days?: number; timeoutMs?: number },
+) {
+  const normalized = symbol.trim().toUpperCase();
+  const days = Math.min(7, Math.max(3, Math.floor(Number(options?.days) || 7)));
+  const cacheKey = `${normalized}:${days}`;
+  const cached = protectionVolatilityCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.profile;
+  const query = new URLSearchParams({ symbols: normalized, days: String(days) });
+  const response = await timedFetch(
+    `${marketSnapshotBaseUrl()}/volatility?${query}`,
+    { headers: { accept: "application/json" } },
+    options?.timeoutMs,
+  );
+  const payload = await responseJson<{ rows?: BinanceProtectionVolatilityProfile[]; error?: string }>(
+    response,
+    "系统 WebSocket 波动率基线不可用",
+  );
+  const profile = Array.isArray(payload.rows) ? payload.rows[0] : undefined;
+  if (!response.ok || !profile)
+    throw new BinanceLiveError(payload.error ?? "系统 WebSocket 波动率基线不可用", response.status);
+  const normalizedProfile = { ...profile, symbol: normalized, windowDays: days };
+  protectionVolatilityCache.set(cacheKey, { profile: normalizedProfile, expiresAt: Date.now() + 5 * 60_000 });
+  return normalizedProfile;
+}
+
 export class BinanceLiveError extends Error {
   constructor(
     message: string,

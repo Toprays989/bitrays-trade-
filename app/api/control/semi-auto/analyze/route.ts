@@ -26,6 +26,7 @@ import {
   type SemiAutoDirection,
 } from "../../../../../lib/nexus-semi-auto-opportunity";
 import { nexusUnifiedMarketData } from "../../../../../lib/nexus-unified-market-data-live";
+import { getNexusLiveOrderFlow } from "../../../../../lib/nexus-order-flow-live";
 import {
   alignOrderQuantityUp,
   effectiveMinimumOrderQuantity,
@@ -47,6 +48,7 @@ type RequestBody = {
   direction?: SemiAutoDirection;
   thesis?: string;
   horizon?: "SCALP" | "INTRADAY" | "SWING";
+  wallTrendOrigin?: { symbol?: string; direction?: SemiAutoDirection };
 };
 
 function parseConfig(value: string) {
@@ -79,6 +81,23 @@ export async function POST(request: Request) {
       { error: "请用 8–1000 个字符描述判断依据、观察到的变化和预期失效条件" },
       { status: 400 },
     );
+
+  const wallTrendOrigin = body.wallTrendOrigin;
+  if (wallTrendOrigin) {
+    if (wallTrendOrigin.symbol !== symbol || wallTrendOrigin.direction !== body.direction)
+      return Response.json({ error: "买卖墙趋势交接的合约或方向已变化，请重新从监控页发起分析" }, { status: 409 });
+    const flow = await getNexusLiveOrderFlow([symbol]);
+    const row = flow.rows[0];
+    const reliability = body.direction === "LONG" ? row?.bidWallReliability ?? 0 : row?.askWallReliability ?? 0;
+    const pulled = body.direction === "LONG"
+      ? row?.proxyState === "BID_LIQUIDITY_PULLED"
+      : row?.proxyState === "ASK_LIQUIDITY_PULLED";
+    const aligned = body.direction === "LONG"
+      ? row?.flowDirection === "BUY" || row?.absorption === "BID_ABSORPTION"
+      : row?.flowDirection === "SELL" || row?.absorption === "ASK_ABSORPTION";
+    if (!row || !row.orderFlowReady || !row.fresh || pulled || !aligned || row.confidence < 0.55 || reliability < 0.55)
+      return Response.json({ error: "买卖墙趋势当前已失效或证据不足，请返回监控页重新确认" }, { status: 409 });
+  }
 
   const db = getDb();
   const [[strategy], [contract]] = await Promise.all([
@@ -397,6 +416,17 @@ export async function POST(request: Request) {
         quoteVolume24h: contract.quoteVolume24h,
       },
       decision: effectiveDecision,
+      ...(wallTrendOrigin
+        ? {
+            wallTrend: {
+              business: "WALL_TREND",
+              symbol,
+              direction: body.direction,
+              checkedAt: new Date().toISOString(),
+              source: "BINANCE_WEBSOCKET_PUBLIC_ORDER_FLOW",
+            },
+          }
+        : {}),
     };
     const [analysisRecord] = await db
       .insert(semiAutoAnalyses)

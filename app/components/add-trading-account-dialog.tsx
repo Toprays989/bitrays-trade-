@@ -6,6 +6,7 @@ export type TradingAccountForm = {
   accountType: "MAIN" | "STRATEGY";
   operatorName: string;
   note: string;
+  exchange: "BINANCE_USDM" | "BINANCE_SPOT";
   apiKey: string;
   secretKey: string;
 };
@@ -107,6 +108,14 @@ export function AddTradingAccountDialog({
               </select>
             </label>
             <label>
+              <span><i>*</i> 凭证类型</span>
+              <select value={form.exchange} onChange={(event) => update("exchange", event.target.value as TradingAccountForm["exchange"]) }>
+                <option value="BINANCE_USDM">Binance 合约 USDM</option>
+                <option value="BINANCE_SPOT">Binance 现货 Spot</option>
+              </select>
+              <small>新账号保存时将按此类型校验 API 权限。</small>
+            </label>
+            <label>
               <span>
                 <i>*</i> 运营账号
               </span>
@@ -192,7 +201,7 @@ export function AddTradingAccountDialog({
                 <td className="mono">{form.accountId || "bys03"}-01</td>
                 <td>{form.name ? `${form.name} AppKey` : "bys03-01"}</td>
                 <td>
-                  <span className="source-tag protect">合约</span>
+                  <span className="source-tag protect">{form.exchange === "BINANCE_SPOT" ? "现货" : "合约"}</span>
                 </td>
                 <td>
                   <span className="source-tag auto">正式</span>

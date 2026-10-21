@@ -8,6 +8,7 @@ import {
   tradingAccounts,
 } from "../../../../db/schema";
 import { BinanceLiveError, changeLivePositionMode, verifyLiveAccount } from "../../../../lib/binance-usdm-live";
+import { BinanceSpotError, getBinanceSpotAccount } from "../../../../lib/binance-spot-live";
 import { credentialContext, decryptCredential, encryptCredential, insecureHttpLiveAllowed, isSecureCredentialRequest, liveTradingAllowedByServer } from "../../../../lib/credential-vault";
 import { isResponse, requirePermission, writeAudit } from "../shared";
 
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
   const user = await requirePermission(request, "sys:exchange:manage");
   if (isResponse(user)) return user;
   if (!isSecureCredentialRequest(request)) return Response.json({ error: "当前连接不是可信 HTTPS，禁止提交真实 API 密钥", code: "HTTPS_REQUIRED_FOR_CREDENTIALS" }, { status: 426 });
-  const body = await request.json() as { accountId?: string; label?: string; apiKey?: string; secretKey?: string };
+  const body = await request.json() as { accountId?: string; label?: string; apiKey?: string; secretKey?: string; exchange?: "BINANCE_USDM" | "BINANCE_SPOT" };
   const validation = validate(body);
   if (validation) return Response.json({ error: validation }, { status: 400 });
   const db = getDb();
@@ -76,7 +77,8 @@ export async function POST(request: Request) {
   ]);
   const now = new Date();
   const [existing] = await db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.ownerEmail, user.email), eq(exchangeCredentials.accountId, account.accountId))).limit(1);
-  const values = { ownerEmail: user.email, accountId: account.accountId, label: body.label!.trim(), apiKeyCiphertext: encryptedApiKey.ciphertext, apiKeyIv: encryptedApiKey.iv, secretKeyCiphertext: encryptedSecret.ciphertext, secretKeyIv: encryptedSecret.iv, apiKeyMask: maskKey(apiKey), allowedSymbolsJson: "[]", maxOrderNotionalUsdt: existing?.maxOrderNotionalUsdt ?? 20, maxDailyNotionalUsdt: existing?.maxDailyNotionalUsdt ?? 100, maxLeverage: existing?.maxLeverage ?? 5, liveTradingEnabled: false, connectionStatus: "UNVERIFIED" as const, lastVerifiedAt: null, lastError: null, totalWalletBalance: null, totalUnrealizedProfit: null, totalMarginBalance: null, totalPositionInitialMargin: null, totalOpenOrderInitialMargin: null, availableBalance: null, balanceSyncedAt: null, positionMode: null, updatedAt: now };
+  const exchange = body.exchange === "BINANCE_SPOT" ? "BINANCE_SPOT" : "BINANCE_USDM";
+  const values = { ownerEmail: user.email, accountId: account.accountId, exchange, label: body.label!.trim(), apiKeyCiphertext: encryptedApiKey.ciphertext, apiKeyIv: encryptedApiKey.iv, secretKeyCiphertext: encryptedSecret.ciphertext, secretKeyIv: encryptedSecret.iv, apiKeyMask: maskKey(apiKey), allowedSymbolsJson: "[]", maxOrderNotionalUsdt: existing?.maxOrderNotionalUsdt ?? 20, maxDailyNotionalUsdt: existing?.maxDailyNotionalUsdt ?? 100, maxLeverage: existing?.maxLeverage ?? 5, liveTradingEnabled: false, connectionStatus: "UNVERIFIED" as const, lastVerifiedAt: null, lastError: null, totalWalletBalance: null, totalUnrealizedProfit: null, totalMarginBalance: null, totalPositionInitialMargin: null, totalOpenOrderInitialMargin: null, availableBalance: null, balanceSyncedAt: null, positionMode: null, updatedAt: now };
   const [saved] = existing
     ? await db.update(exchangeCredentials).set(values).where(eq(exchangeCredentials.id, existing.id)).returning()
     : await db.insert(exchangeCredentials).values({ ...values, createdAt: now }).returning();
@@ -95,10 +97,18 @@ export async function PATCH(request: Request) {
   if (body.action === "VERIFY") {
     try {
       const credentials = { apiKey: await decryptCredential(row.apiKeyCiphertext, row.apiKeyIv, credentialContext(user.email, row.accountId, "api-key")), secretKey: await decryptCredential(row.secretKeyCiphertext, row.secretKeyIv, credentialContext(user.email, row.accountId, "secret-key")) };
-      const result = await verifyLiveAccount(credentials);
+      const result = row.exchange === "BINANCE_SPOT"
+        ? await getBinanceSpotAccount(credentials).then((spot) => {
+          const permissions = (spot.permissions ?? []).map((permission) => String(permission).toUpperCase());
+          // Binance has returned both permissions:["SPOT"] and, for some
+          // virtual subaccounts, accountType:"SPOT" without permissions.
+          const spotPermission = permissions.includes("SPOT") || String(spot.accountType || "").toUpperCase() === "SPOT";
+          return { canTrade: spotPermission, tradeTestAccepted: true, totalWalletBalance: spot.balances?.reduce((sum, balance) => sum + Number(balance.free) + Number(balance.locked), 0) ?? 0, totalUnrealizedProfit: 0, totalMarginBalance: 0, totalPositionInitialMargin: 0, totalOpenOrderInitialMargin: 0, availableBalance: 0, hedgeMode: false, latencyMs: 0, usedWeight: 0, accountCanTradeReported: spotPermission, permissions, accountType: spot.accountType };
+        })
+        : await verifyLiveAccount(credentials);
       const now = new Date();
       const readyForLive = result.canTrade && result.tradeTestAccepted;
-      const verificationError = !readyForLive ? "密钥未通过 Binance 合约下单权限校验" : null;
+      const verificationError = !readyForLive ? (row.exchange === "BINANCE_SPOT" ? "密钥未通过 Binance 现货交易权限校验" : "密钥未通过 Binance 合约下单权限校验") : null;
       const totalWalletBalance = Number(result.totalWalletBalance);
       const totalUnrealizedProfit = Number(result.totalUnrealizedProfit);
       const totalMarginBalance = Number(result.totalMarginBalance);
@@ -110,9 +120,9 @@ export async function PATCH(request: Request) {
       if (!readyForLive) return Response.json({ error: verificationError, verified: false, ...result }, { status: 409 });
       return Response.json({ verified: true, ...result });
     } catch (error) {
-      const message = error instanceof BinanceLiveError ? error.message : "密钥解密或 Binance 校验失败";
+      const message = error instanceof BinanceLiveError || error instanceof BinanceSpotError ? error.message : "密钥解密或 Binance 校验失败";
       await db.update(exchangeCredentials).set({ connectionStatus: "FAILED", liveTradingEnabled: false, lastError: message, totalWalletBalance: null, totalUnrealizedProfit: null, totalMarginBalance: null, totalPositionInitialMargin: null, totalOpenOrderInitialMargin: null, availableBalance: null, balanceSyncedAt: null, positionMode: null, updatedAt: new Date() }).where(eq(exchangeCredentials.id, row.id));
-      return Response.json({ error: message }, { status: error instanceof BinanceLiveError ? Math.min(Math.max(error.status, 400), 599) : 500 });
+      return Response.json({ error: message }, { status: error instanceof BinanceLiveError || error instanceof BinanceSpotError ? Math.min(Math.max(error.status, 400), 599) : 500 });
     }
   }
   if (body.action === "DISABLE_LIVE") {

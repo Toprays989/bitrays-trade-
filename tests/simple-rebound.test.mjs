@@ -6,7 +6,7 @@ import { createSimpleReboundSlots, occupySimpleReboundSlot, availableSimpleRebou
 import { buildSimpleReboundOrderPlan } from "../lib/simple-rebound-order-plan.ts";
 import { buildSimpleReboundExecutionRequest } from "../lib/simple-rebound-execution-adapter.ts";
 import { SIMPLE_REBOUND_EVENT_TYPES, isSimpleReboundEventType } from "../lib/simple-rebound-events.ts";
-import { runSimpleReboundCycle } from "../lib/simple-rebound-runner.ts";
+import { runSimpleReboundCycle, shouldSkipSimpleReboundMarketLoad } from "../lib/simple-rebound-runner.ts";
 import { hydrateSimpleReboundSlots } from "../lib/simple-rebound-slot-recovery.ts";
 import { createSimpleReboundScheduler } from "../lib/simple-rebound-scheduler.ts";
 import { mapSimpleReboundVolumeRows } from "../lib/simple-rebound-market-mapping.ts";
@@ -107,6 +107,8 @@ test("simple rebound execution request preserves account context", () => {
   assert.equal(request.source, "SIMPLE_REBOUND");
   assert.equal(request.accountId, "bys04");
   assert.equal(request.order.side, "BUY");
+  assert.equal(request.order.orderType, "MARKET");
+  assert.equal("type" in request.order, false);
   assert.equal(request.order.quantity, 0.01);
   assert.equal(request.order.requireExactLeverage, true);
 });
@@ -149,6 +151,21 @@ test("simple rebound runner emits isolated signal and pending order events", () 
     "SIMPLE_REBOUND_ORDER",
   ]);
   assert.equal(result.events[1]?.outcome, "PENDING");
+});
+
+test("paused simple rebound skips market loading when no slot is occupied", () => {
+  assert.equal(shouldSkipSimpleReboundMarketLoad({
+    strategyStatus: "PAUSED",
+    slots: [null, null, null, null, null],
+  }), true);
+  assert.equal(shouldSkipSimpleReboundMarketLoad({
+    strategyStatus: "PAUSED",
+    slots: [{ slotId: 1, symbol: "BTCUSDT", entryPrice: 100, openedAtMs: 1 }, null, null, null, null],
+  }), false);
+  assert.equal(shouldSkipSimpleReboundMarketLoad({
+    strategyStatus: "RUNNING",
+    slots: [null, null, null, null, null],
+  }), false);
 });
 
 test("simple rebound scheduler skips an overlapping cycle", async () => {

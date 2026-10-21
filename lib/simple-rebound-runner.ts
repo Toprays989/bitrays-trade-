@@ -9,6 +9,13 @@ import { SIMPLE_REBOUND_EVENT_TYPES } from "./simple-rebound-events.ts";
 import { buildSimpleReboundOrderPlan, type SimpleReboundOrderPlan } from "./simple-rebound-order-plan.ts";
 import { SIMPLE_REBOUND_MAX_SLOTS } from "./simple-rebound-slots.ts";
 
+export function shouldSkipSimpleReboundMarketLoad(input: Readonly<{
+  strategyStatus: string;
+  slots: readonly (SimpleReboundSlot | null)[];
+}>) {
+  return input.strategyStatus !== "RUNNING" && input.slots.every((slot) => slot === null);
+}
+
 export function runSimpleReboundCycle(input: Readonly<{
   market: readonly SimpleReboundMarketRow[];
   slots: readonly (SimpleReboundSlot | null)[];

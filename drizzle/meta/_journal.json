@@ -505,6 +505,34 @@
       "when": 1791853200000,
       "tag": "0083_simple_rebound_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1791856800000,
+      "tag": "0084_manual_entry_grid",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1792848000000,
+      "tag": "0085_spot_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1792848600000,
+      "tag": "0086_challenge_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1793000000000,
+      "tag": "0087_paper_trading_core",
+      "breakpoints": true
     }
   ]
 }

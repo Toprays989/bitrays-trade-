@@ -156,6 +156,7 @@ import {
   frozenExecutionExpiryReason,
   isFrozenExecutionApproval,
   MAX_FROZEN_EXECUTION_VALIDITY_MS,
+  MAX_FROZEN_EXECUTION_RENEWALS,
   renewFrozenExecutionDecision,
   resolveFrozenExecutionDeadline,
   resolveFrozenExecutionIntentExpiry,
@@ -2518,6 +2519,8 @@ async function retryFrozenShortExecutionDecisions(
         deferredAt: now,
         waitCode: "SHORT_LIVE_MARK_PRICE_WAIT",
         analysisValiditySeconds: config.trigger.analysisValiditySeconds,
+        allowRenewal: true,
+        maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
       });
       evidence.frozenExecutionDecision = renewal.decision;
       const renewedDeadline = renewal.executionExpiresAtMs;
@@ -2615,6 +2618,8 @@ async function executeShortLiveEntrySafely(
       deferredAt,
       waitCode: "SHORT_EXECUTION_PIPELINE_RECOVERY_WAIT",
       analysisValiditySeconds: input.config.trigger.analysisValiditySeconds,
+      allowRenewal: true,
+      maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
     });
     evidence.frozenExecutionDecision = renewal.decision;
     const [deferredTrace] = await getDb()
@@ -2708,6 +2713,8 @@ async function executeShortLiveEntry(input: ShortLiveEntryInput) {
       deferredAt,
       waitCode: code,
       analysisValiditySeconds: input.config.trigger.analysisValiditySeconds,
+      allowRenewal: true,
+      maxRenewals: MAX_FROZEN_EXECUTION_RENEWALS,
     });
     evidence.frozenExecutionDecision = renewal.decision;
     await db

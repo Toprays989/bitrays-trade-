@@ -1133,7 +1133,7 @@ export const exchangeCredentials = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     ownerEmail: text("owner_email").notNull(),
     accountId: text("account_id").notNull(),
-    exchange: text("exchange", { enum: ["BINANCE_USDM"] })
+    exchange: text("exchange", { enum: ["BINANCE_USDM", "BINANCE_SPOT"] })
       .notNull()
       .default("BINANCE_USDM"),
     environment: text("environment", { enum: ["LIVE"] })
@@ -1253,6 +1253,309 @@ export const liveOrderEvents = sqliteTable(
       table.updatedAt,
     ),
     index("live_order_events_lifecycle_idx").on(table.lifecycleId),
+  ],
+);
+
+export const manualEntryGridPlans = sqliteTable(
+  "manual_entry_grid_plans",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    accountId: text("account_id").notNull(),
+    credentialId: integer("credential_id").notNull(),
+    symbol: text("symbol").notNull(),
+    positionSide: text("position_side", { enum: ["LONG", "SHORT"] }).notNull(),
+    lowerPrice: real("lower_price").notNull(),
+    upperPrice: real("upper_price").notNull(),
+    gridCount: integer("grid_count").notNull(),
+    totalQuantity: real("total_quantity").notNull(),
+    quantityStep: real("quantity_step").notNull(),
+    leverage: integer("leverage").notNull().default(1),
+    takeProfitPlanJson: text("take_profit_plan_json").notNull().default("[]"),
+    stopLossPlanJson: text("stop_loss_plan_json").notNull().default("[]"),
+    trailingActivationPercent: real("trailing_activation_percent").notNull().default(0),
+    trailingStopPercent: real("trailing_stop_percent").notNull().default(0),
+    capitalPreservationStopRoePercent: real("capital_preservation_stop_roe_percent"),
+    hysteresisBps: real("hysteresis_bps").notNull().default(5),
+    levelsJson: text("levels_json").notNull().default("[]"),
+    positionId: integer("position_id"),
+    positionVersion: integer("position_version"),
+    status: text("status", {
+      enum: ["DRAFT", "ARMED", "PAUSED", "CANCELED", "EXPIRED", "COMPLETED", "ERROR"],
+    }).notNull().default("DRAFT"),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    lastPrice: real("last_price"),
+    lastPriceAt: integer("last_price_at", { mode: "timestamp_ms" }),
+    leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+    lastBlockReason: text("last_block_reason"),
+    lastError: text("last_error"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("manual_entry_grid_plans_owner_status_idx").on(table.ownerEmail, table.status, table.updatedAt),
+    index("manual_entry_grid_plans_runner_idx").on(table.status, table.leaseUntil, table.updatedAt),
+    index("manual_entry_grid_plans_account_symbol_idx").on(table.accountId, table.symbol, table.status),
+    index("manual_entry_grid_plans_position_idx").on(table.positionId, table.positionVersion, table.status),
+  ],
+);
+
+export const manualEntryGridLevels = sqliteTable(
+  "manual_entry_grid_levels",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    planId: integer("plan_id").notNull(),
+    levelIndex: integer("level_index").notNull(),
+    levelPrice: real("level_price").notNull(),
+    quantity: real("quantity").notNull(),
+    state: text("state", {
+      enum: ["ARMED", "WAIT_REARM", "TRIGGERING", "SUBMITTED", "FILLED", "EXECUTION_UNKNOWN", "ERROR"],
+    }).notNull().default("ARMED"),
+    triggerCount: integer("trigger_count").notNull().default(0),
+    clientOrderId: text("client_order_id"),
+    positionAdditionId: integer("position_addition_id"),
+    lastOrderEventId: integer("last_order_event_id"),
+    lastTriggerPrice: real("last_trigger_price"),
+    lastTriggeredAt: integer("last_triggered_at", { mode: "timestamp_ms" }),
+    lastError: text("last_error"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("manual_entry_grid_levels_plan_index_uidx").on(table.planId, table.levelIndex),
+    uniqueIndex("manual_entry_grid_levels_client_order_uidx").on(table.clientOrderId),
+    index("manual_entry_grid_levels_plan_state_idx").on(table.planId, table.state, table.updatedAt),
+  ],
+);
+
+export const spotWhitelistVersions = sqliteTable(
+  "spot_whitelist_versions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    version: text("version").notNull(),
+    status: text("status", { enum: ["DRAFT", "PUBLISHED", "RETIRED"] }).notNull().default("DRAFT"),
+    source: text("source").notNull().default("BINANCE_SPOT_EXCHANGE_INFO"),
+    notes: text("notes"),
+    publishedBy: text("published_by"),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("spot_whitelist_versions_owner_version_uidx").on(table.ownerEmail, table.version),
+    index("spot_whitelist_versions_owner_status_idx").on(table.ownerEmail, table.status, table.updatedAt),
+  ],
+);
+
+export const spotWhitelistSymbols = sqliteTable(
+  "spot_whitelist_symbols",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    versionId: integer("version_id").notNull(),
+    symbol: text("symbol").notNull(),
+    baseAsset: text("base_asset").notNull(),
+    quoteAsset: text("quote_asset").notNull().default("USDT"),
+    tradingStatus: text("trading_status").notNull(),
+    priceTickSize: real("price_tick_size").notNull(),
+    quantityStep: real("quantity_step").notNull(),
+    minOrderQty: real("min_order_qty").notNull(),
+    minNotionalUsdt: real("min_notional_usdt").notNull(),
+    quoteVolume24h: real("quote_volume_24h"),
+    spreadBps: real("spread_bps"),
+    volatility24h: real("volatility_24h"),
+    depthUsdt: real("depth_usdt"),
+    riskTier: text("risk_tier", { enum: ["NORMAL", "CAUTION", "PROTECT", "REDUCE_ONLY"] }).notNull().default("NORMAL"),
+    operatorSelected: integer("operator_selected", { mode: "boolean" }).notNull().default(false),
+    eligible: integer("eligible", { mode: "boolean" }).notNull().default(false),
+    rejectionReason: text("rejection_reason"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("spot_whitelist_symbols_version_symbol_uidx").on(table.versionId, table.symbol),
+    index("spot_whitelist_symbols_version_eligible_idx").on(table.versionId, table.eligible, table.operatorSelected),
+  ],
+);
+
+export const challengeInstances = sqliteTable(
+  "challenge_instances",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    accountId: text("account_id").notNull(),
+    credentialId: integer("credential_id").notNull(),
+    whitelistVersionId: integer("whitelist_version_id").notNull(),
+    capitalUsdt: real("capital_usdt").notNull(),
+    feeRateBps: real("fee_rate_bps").notNull().default(4),
+    status: text("status", {
+      enum: ["DRAFT", "RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR", "CLEARING", "SUCCEEDED", "FAILED", "ERROR"],
+    }).notNull().default("DRAFT"),
+    equityUsdt: real("equity_usdt"),
+    netPnlUsdt: real("net_pnl_usdt"),
+    successProbability: real("success_probability"),
+    failureProbability: real("failure_probability"),
+    stressFailureProbability: real("stress_failure_probability"),
+    riskUsedPercent: real("risk_used_percent"),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    terminalAt: integer("terminal_at", { mode: "timestamp_ms" }),
+    terminalReason: text("terminal_reason"),
+    triggerEquityUsdt: real("trigger_equity_usdt"),
+    finalEquityUsdt: real("final_equity_usdt"),
+    totalFeesUsdt: real("total_fees_usdt").notNull().default(0),
+    totalSlippageUsdt: real("total_slippage_usdt").notNull().default(0),
+    modelVersion: text("model_version").notNull().default("spot-challenge-v1"),
+    riskConfigJson: text("risk_config_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("challenge_instances_owner_status_idx").on(table.ownerEmail, table.status, table.updatedAt),
+    index("challenge_instances_account_idx").on(table.accountId, table.status),
+  ],
+);
+
+export const challengeRiskSnapshots = sqliteTable(
+  "challenge_risk_snapshots",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    challengeId: integer("challenge_id").notNull(),
+    equityUsdt: real("equity_usdt").notNull(),
+    netPnlUsdt: real("net_pnl_usdt").notNull(),
+    successProbability: real("success_probability"),
+    failureProbability: real("failure_probability"),
+    stressFailureProbability: real("stress_failure_probability"),
+    pressureLossUsdt: real("pressure_loss_usdt"),
+    var95Usdt: real("var95_usdt"),
+    riskState: text("risk_state").notNull(),
+    metricsJson: text("metrics_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("challenge_risk_snapshots_challenge_time_idx").on(table.challengeId, table.createdAt),
+  ],
+);
+
+export const challengeOrders = sqliteTable(
+  "challenge_orders",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    challengeId: integer("challenge_id").notNull(),
+    ownerEmail: text("owner_email").notNull(),
+    accountId: text("account_id").notNull(),
+    credentialId: integer("credential_id").notNull(),
+    symbol: text("symbol").notNull(),
+    side: text("side", { enum: ["BUY", "SELL"] }).notNull(),
+    orderType: text("order_type", { enum: ["MARKET", "LIMIT"] }).notNull(),
+    quantity: real("quantity"),
+    quoteOrderQty: real("quote_order_qty"),
+    limitPrice: real("limit_price"),
+    reservedNotionalUsdt: real("reserved_notional_usdt").notNull(),
+    clientOrderId: text("client_order_id").notNull(),
+    exchangeOrderId: text("exchange_order_id"),
+    status: text("status", { enum: ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED", "EXECUTION_UNKNOWN"] }).notNull().default("PENDING"),
+    executedQuantity: real("executed_quantity").notNull().default(0),
+    averagePrice: real("average_price"),
+    feeUsdt: real("fee_usdt").notNull().default(0),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    responseJson: text("response_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("challenge_orders_client_uidx").on(table.clientOrderId),
+    index("challenge_orders_challenge_status_idx").on(table.challengeId, table.status, table.updatedAt),
+    index("challenge_orders_account_symbol_idx").on(table.accountId, table.symbol, table.status),
+  ],
+);
+
+export const paperAccounts = sqliteTable(
+  "paper_accounts",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    accountId: text("account_id").notNull(),
+    name: text("name").notNull(),
+    initialBalanceUsdt: real("initial_balance_usdt").notNull(),
+    balanceUsdt: real("balance_usdt").notNull(),
+    availableBalanceUsdt: real("available_balance_usdt").notNull(),
+    feeRateBps: real("fee_rate_bps").notNull().default(4),
+    status: text("status", { enum: ["ACTIVE", "PAUSED", "CLOSED"] }).notNull().default("ACTIVE"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("paper_accounts_owner_account_uidx").on(table.ownerEmail, table.accountId),
+    index("paper_accounts_owner_status_idx").on(table.ownerEmail, table.status, table.updatedAt),
+  ],
+);
+
+export const paperOrders = sqliteTable(
+  "paper_orders",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    paperAccountId: integer("paper_account_id").notNull(),
+    symbol: text("symbol").notNull(),
+    direction: text("direction", { enum: ["LONG", "SHORT"] }).notNull(),
+    orderType: text("order_type", { enum: ["MARKET", "LIMIT"] }).notNull(),
+    quantity: real("quantity").notNull(),
+    limitPrice: real("limit_price"),
+    filledQuantity: real("filled_quantity").notNull().default(0),
+    averagePrice: real("average_price"),
+    status: text("status", { enum: ["NEW", "FILLED", "CANCELED"] }).notNull().default("NEW"),
+    sourceBusiness: text("source_business").notNull().default("PAPER_TRADING"),
+    strategyId: integer("strategy_id"),
+    brainKey: text("brain_key"),
+    configVersion: integer("config_version"),
+    analysisRecordId: integer("analysis_record_id"),
+    clientOrderId: text("client_order_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("paper_orders_client_uidx").on(table.clientOrderId),
+    index("paper_orders_account_status_idx").on(table.paperAccountId, table.status, table.updatedAt),
+    index("paper_orders_owner_time_idx").on(table.ownerEmail, table.createdAt),
+  ],
+);
+
+export const paperFills = sqliteTable(
+  "paper_fills",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    paperAccountId: integer("paper_account_id").notNull(),
+    paperOrderId: integer("paper_order_id").notNull(),
+    symbol: text("symbol").notNull(),
+    direction: text("direction", { enum: ["LONG", "SHORT"] }).notNull(),
+    quantity: real("quantity").notNull(),
+    price: real("price").notNull(),
+    feeUsdt: real("fee_usdt").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("paper_fills_account_time_idx").on(table.paperAccountId, table.createdAt),
+    index("paper_fills_order_idx").on(table.paperOrderId),
+  ],
+);
+
+export const paperPositions = sqliteTable(
+  "paper_positions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerEmail: text("owner_email").notNull(),
+    paperAccountId: integer("paper_account_id").notNull(),
+    symbol: text("symbol").notNull(),
+    direction: text("direction", { enum: ["LONG", "SHORT"] }).notNull(),
+    quantity: real("quantity").notNull(),
+    entryPrice: real("entry_price").notNull(),
+    realizedPnlUsdt: real("realized_pnl_usdt").notNull().default(0),
+    status: text("status", { enum: ["OPEN", "CLOSED"] }).notNull().default("OPEN"),
+    openedAt: integer("opened_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("paper_positions_account_symbol_status_idx").on(table.paperAccountId, table.symbol, table.status),
+    index("paper_positions_owner_status_idx").on(table.ownerEmail, table.status, table.updatedAt),
   ],
 );
 

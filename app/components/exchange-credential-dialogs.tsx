@@ -7,6 +7,7 @@ import type {
 
 export type ExchangeCredentialForm = {
   accountId: string;
+  exchange: "BINANCE_USDM" | "BINANCE_SPOT";
   label: string;
   apiKey: string;
   secretKey: string;
@@ -82,6 +83,14 @@ export function CredentialEditorDialog({
                 onChange({ ...form, label: event.target.value })
               }
             />
+          </label>
+          <label>
+            <span>凭证类型</span>
+            <select value={form.exchange} onChange={(event) => onChange({ ...form, exchange: event.target.value as ExchangeCredentialForm["exchange"] })}>
+              <option value="BINANCE_USDM">Binance 合约 USDM</option>
+              <option value="BINANCE_SPOT">Binance 现货 Spot</option>
+            </select>
+            <small>现货挑战赛必须选择 Binance 现货 Spot。</small>
           </label>
           <label>
             <span>API Key</span>
