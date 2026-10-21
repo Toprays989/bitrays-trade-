@@ -59,6 +59,8 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [summary, setSummary] = useState<PhaseTwoSummary>({ ready: 0, waiting: 0, invalidated: 0, brainReady: 0, eyeReady: 0 });
+  const [paperAccounts, setPaperAccounts] = useState<Array<{ accountId: string; name: string }>>([]);
+  const [paperAccountId, setPaperAccountId] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -84,6 +86,24 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
     };
   }, [load]);
 
+  useEffect(() => {
+    if (executionEnvironment !== "PAPER") return;
+    void fetch("/api/control/paper-trading", { cache: "no-store" }).then((response) => response.json()).then((payload: { accounts?: Array<{ accountId: string; name: string }> }) => {
+      setPaperAccounts(payload.accounts ?? []);
+      if (payload.accounts?.[0]) setPaperAccountId((current) => current || payload.accounts![0].accountId);
+    }).catch(() => setPaperAccounts([]));
+  }, [executionEnvironment]);
+
+  async function paperOrder(row: WallRow) {
+    if (executionEnvironment !== "PAPER" || !paperAccountId || !row.price || !row.direction) return setToast("请先选择 PAPER 虚拟账户并等待 READY 信号");
+    const long = row.direction === "LONG";
+    const body = { action: "PLACE_ORDER", accountId: paperAccountId, symbol: row.symbol, direction: row.direction, orderType: "MARKET", quantity: 0.001, sourceBusiness: "WALL_TREND_AUTO_PAPER", takeProfitPlan: [row.price * (long ? 1.01 : 0.99)], stopLossPlan: [row.price * (long ? 0.99 : 1.01)] };
+    const response = await fetch("/api/control/paper-trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const payload = await response.json() as { error?: string };
+    if (!response.ok) return setToast(payload.error || "买卖墙 PAPER 模拟下单失败");
+    setToast(`${row.symbol} 买卖墙 PAPER 模拟单已创建，已挂入止盈止损保护`);
+  }
+
   const visibleRows = useMemo(() => rows.filter((row) => row.symbol.includes(query.trim().toUpperCase())), [rows, query]);
 
   return (
@@ -102,6 +122,7 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
                 <option value="PAPER">PAPER 虚拟盘</option>
               </select>
             </label>
+            {executionEnvironment === "PAPER" && <label className="environment-switcher"><span>PAPER 账户</span><select value={paperAccountId} onChange={(event) => setPaperAccountId(event.target.value)}><option value="">请选择</option>{paperAccounts.map((account) => <option key={account.accountId} value={account.accountId}>{account.accountId} · {account.name}</option>)}</select></label>}
             <span className={`status-pill ${ready ? "positive" : "warning"}`}>{ready ? "WebSocket 就绪" : "监听预热中"}</span>
           </div>
         </div>
@@ -125,7 +146,7 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
               const flow = row.orderFlow;
               return <tr key={row.symbol}>
                 <td><strong>{row.symbol}</strong><small>24h {money(row.quoteVolume24h)} USDT</small></td>
-                <td><span className={`status-pill ${row.businessState === "READY" ? "positive" : row.businessState === "INVALIDATED" ? "negative" : "warning"}`}>{row.businessState ?? row.status}</span><small>{row.direction === "LONG" ? "做多候选" : row.direction === "SHORT" ? "做空候选" : "双向观察"}</small>{row.businessState === "READY" && row.direction && onHandoff ? <button type="button" className="table-action-btn" onClick={() => onHandoff({ symbol: row.symbol, direction: row.direction as "LONG" | "SHORT", thesis: `买卖墙趋势监控确认：${row.symbol} 出现${row.direction === "LONG" ? "买墙承接" : "卖墙压制"}，请结合实时证据验证；墙体变化即视为失效。`, requestId: Date.now() })}>交给大脑</button> : null}</td>
+                <td><span className={`status-pill ${row.businessState === "READY" ? "positive" : row.businessState === "INVALIDATED" ? "negative" : "warning"}`}>{row.businessState ?? row.status}</span><small>{row.direction === "LONG" ? "做多候选" : row.direction === "SHORT" ? "做空候选" : "双向观察"}</small>{row.businessState === "READY" && row.direction && executionEnvironment === "PAPER" ? <button type="button" className="table-action-btn" onClick={() => void paperOrder(row)}>PAPER 模拟开仓</button> : null}{row.businessState === "READY" && row.direction && onHandoff ? <button type="button" className="table-action-btn" onClick={() => onHandoff({ symbol: row.symbol, direction: row.direction as "LONG" | "SHORT", thesis: `买卖墙趋势监控确认：${row.symbol} 出现${row.direction === "LONG" ? "买墙承接" : "卖墙压制"}，请结合实时证据验证；墙体变化即视为失效。`, requestId: Date.now() })}>交给大脑</button> : null}</td>
                 <td>{row.brain ? <><strong>{row.brain.selected}</strong><small>眼睛 {row.marketEye?.status ?? "WAIT"} · 事实 {row.brain.factCount}</small></> : "等待大脑事实"}</td>
                 <td>{price(row.price)}<small>{flow ? `${flow.ageMs}ms` : "-"}</small></td>
                 <td>{flow ? <><strong>{price(flow.bidWallPrice)}</strong><small>{money(flow.bidWallNotional)} · {row.bidDistanceBps?.toFixed(1)} bps</small></> : "-"}</td>
