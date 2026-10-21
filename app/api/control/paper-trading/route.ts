@@ -123,6 +123,10 @@ export async function POST(request: Request) {
   const [account] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, user.email), eq(paperAccounts.accountId, accountId))).limit(1);
   if (!account) return Response.json({ error: "虚拟账户不存在" }, { status: 404 });
   if (account.status !== "ACTIVE") return Response.json({ error: "虚拟账户当前不可交易" }, { status: 409 });
+  if (body.sourceBusiness === "WALL_TREND_AUTO_PAPER") {
+    const [existing] = await db.select({ id: paperPositions.id }).from(paperPositions).where(and(eq(paperPositions.paperAccountId, account.id), eq(paperPositions.symbol, symbol), eq(paperPositions.status, "OPEN"))).limit(1);
+    if (existing) return Response.json({ error: "该 PAPER 账户已有该合约的买卖墙虚拟持仓" }, { status: 409 });
+  }
   let fillPrice: number | null = null;
   if (orderType === "MARKET") {
     const [mark] = await getBinanceLiveMarkPrices([symbol]);
