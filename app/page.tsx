@@ -324,6 +324,7 @@ function WorkspacePage({
   strategyFocusMode,
   marketFocus,
   strategyLogTabOpen,
+  executionEnvironment,
 }: {
   active: string;
   setActive: (page: string) => void;
@@ -334,6 +335,7 @@ function WorkspacePage({
   strategyFocusMode?: "EDIT" | "LEARNING";
   marketFocus?: { symbol: string; requestId: number } | null;
   strategyLogTabOpen: boolean;
+  executionEnvironment: "LIVE" | "PAPER";
 }) {
   const [wallTrendHandoff, setWallTrendHandoff] = useState<WallTrendHandoff | null>(null);
   const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
@@ -14557,6 +14559,7 @@ export default function Home() {
                 active === "strategyLogs" ||
                 openTabs.includes("strategyLogs")
               }
+              executionEnvironment={executionEnvironment}
             />
           </div>
         </section>
