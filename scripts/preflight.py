@@ -422,6 +422,13 @@ done
 GZIP=-1 tar -chzf - -C "$root" current -C "$snapshot" data
 '''
     _, stdout, stderr = client.exec_command(command, timeout=3600)
+    # The SSH command timeout applies to channel reads as an inactivity
+    # timeout. A consistent database snapshot can legitimately produce no
+    # stdout for longer than that while SQLite backup is running. Keep the
+    # overall command timeout at the SSH layer, but let the channel drain
+    # until the remote command exits instead of failing on a quiet interval.
+    stdout.channel.settimeout(None)
+    stderr.channel.settimeout(None)
     payload = stdout.read()
     error = stderr.read().decode("utf-8", errors="replace")
     status = stdout.channel.recv_exit_status()
