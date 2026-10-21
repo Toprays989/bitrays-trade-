@@ -86,7 +86,7 @@ export async function POST(request: Request) {
   const orderType = body.orderType === "LIMIT" ? "LIMIT" : body.orderType === "MARKET" ? "MARKET" : null;
   const quantity = positive(body.quantity);
   const limitPrice = positive(body.limitPrice);
-  if (!/^PAPER-[A-Z0-9_-]{1,20}$/.test(accountId) || !/^[A-Z0-9]{5,20}USDT$/.test(symbol) || !direction || !orderType || !quantity || (orderType === "LIMIT" && !limitPrice))
+  if (!/^PAPER-[A-Z0-9_-]{1,20}$/.test(accountId) || !/^[A-Z0-9]{3,20}USDT$/.test(symbol) || !direction || !orderType || !quantity || (orderType === "LIMIT" && !limitPrice))
     return Response.json({ error: "虚拟订单参数无效" }, { status: 400 });
   const [account] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, user.email), eq(paperAccounts.accountId, accountId))).limit(1);
   if (!account) return Response.json({ error: "虚拟账户不存在" }, { status: 404 });
