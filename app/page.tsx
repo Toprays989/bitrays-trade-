@@ -325,6 +325,7 @@ function WorkspacePage({
   marketFocus,
   strategyLogTabOpen,
   executionEnvironment,
+  setExecutionEnvironment,
 }: {
   active: string;
   setActive: (page: string) => void;
@@ -336,6 +337,7 @@ function WorkspacePage({
   marketFocus?: { symbol: string; requestId: number } | null;
   strategyLogTabOpen: boolean;
   executionEnvironment: "LIVE" | "PAPER";
+  setExecutionEnvironment: (environment: "LIVE" | "PAPER") => void;
 }) {
   const [wallTrendHandoff, setWallTrendHandoff] = useState<WallTrendHandoff | null>(null);
   const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
@@ -4204,6 +4206,8 @@ function WorkspacePage({
     return (
       <WallTrendView
         setToast={setToast}
+        executionEnvironment={executionEnvironment}
+        setExecutionEnvironment={setExecutionEnvironment}
         onHandoff={(handoff) => {
           setWallTrendHandoff(handoff);
           setActive("semiAuto");
@@ -14560,6 +14564,7 @@ export default function Home() {
                 openTabs.includes("strategyLogs")
               }
               executionEnvironment={executionEnvironment}
+              setExecutionEnvironment={setExecutionEnvironment}
             />
           </div>
         </section>

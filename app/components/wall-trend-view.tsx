@@ -53,7 +53,7 @@ function price(value: number | undefined) {
   return value && Number.isFinite(value) ? value.toPrecision(8) : "-";
 }
 
-export function WallTrendView({ setToast, onHandoff }: { setToast: (message: string) => void; onHandoff?: (handoff: WallTrendHandoff) => void }) {
+export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIVE", setExecutionEnvironment }: { setToast: (message: string) => void; onHandoff?: (handoff: WallTrendHandoff) => void; executionEnvironment?: "LIVE" | "PAPER"; setExecutionEnvironment?: (environment: "LIVE" | "PAPER") => void }) {
   const [rows, setRows] = useState<WallRow[]>([]);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -92,9 +92,18 @@ export function WallTrendView({ setToast, onHandoff }: { setToast: (message: str
         <div className="panel-head">
           <div>
             <h2>买卖墙趋势</h2>
-            <p>独立业务监控层，复用系统订单流眼睛；当前只读，不触发下单。</p>
+            <p>独立业务监控层，复用公共行情订单流；当前只读，不触发下单。转交半自动后沿用当前环境，PAPER 订单与实盘账本隔离。</p>
           </div>
-          <div className={`status-pill ${ready ? "positive" : "warning"}`}>{ready ? "WebSocket 就绪" : "监听预热中"}</div>
+          <div className="panel-actions">
+            <label className="environment-switcher" title="买卖墙转交后的执行环境">
+              <span>测试环境</span>
+              <select value={executionEnvironment} onChange={(event) => setExecutionEnvironment?.(event.target.value === "PAPER" ? "PAPER" : "LIVE")}>
+                <option value="LIVE">LIVE 实盘</option>
+                <option value="PAPER">PAPER 虚拟盘</option>
+              </select>
+            </label>
+            <span className={`status-pill ${ready ? "positive" : "warning"}`}>{ready ? "WebSocket 就绪" : "监听预热中"}</span>
+          </div>
         </div>
         <div className="panel-actions">
           <input aria-label="筛选合约" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选合约，例如 BTC" />
