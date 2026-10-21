@@ -66,6 +66,7 @@ function evaluatePhaseTwo(row: Awaited<ReturnType<typeof getNexusLiveOrderFlow>>
   return {
     status,
     direction,
+    waitReason: status === "WAIT" ? (brain?.reasons[0]?.message ?? "等待订单流方向、墙体可靠性和大脑事实闭合") : null,
     brain: {
       long: longBrain.state,
       short: shortBrain.state,
@@ -151,6 +152,7 @@ export async function GET(request: Request) {
         direction: phaseTwo.direction,
         brain: phaseTwo.brain,
         marketEye: phaseTwo.marketEye,
+        waitReason: phaseTwo.waitReason,
       };
     });
 

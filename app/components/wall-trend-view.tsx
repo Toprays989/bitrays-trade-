@@ -10,6 +10,7 @@ type WallRow = {
   direction?: "LONG" | "SHORT" | null;
   brain?: { long: string; short: string; selected: string; reason: string; factCount: number };
   marketEye?: { status: "READY" | "WAIT" | "INVALIDATED"; reason: string };
+  waitReason?: string | null;
   score?: number;
   price?: number;
   bidDistanceBps?: number | null;
@@ -160,7 +161,7 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
               return <tr key={row.symbol}>
                 <td><strong>{row.symbol}</strong><small>24h {money(row.quoteVolume24h)} USDT</small></td>
                 <td><span className={`status-pill ${row.businessState === "READY" ? "positive" : row.businessState === "INVALIDATED" ? "negative" : "warning"}`}>{row.businessState ?? row.status}</span><small>{row.direction === "LONG" ? "做多候选" : row.direction === "SHORT" ? "做空候选" : "双向观察"}</small>{row.businessState === "READY" && row.direction && executionEnvironment === "PAPER" ? <small className="source-tag protect">PAPER 自动下单已启用</small> : null}{row.businessState === "READY" && row.direction && onHandoff ? <button type="button" className="table-action-btn" onClick={() => onHandoff({ symbol: row.symbol, direction: row.direction as "LONG" | "SHORT", thesis: `买卖墙趋势监控确认：${row.symbol} 出现${row.direction === "LONG" ? "买墙承接" : "卖墙压制"}，请结合实时证据验证；墙体变化即视为失效。`, requestId: Date.now() })}>交给大脑</button> : null}</td>
-                <td>{row.brain ? <><strong>{row.brain.selected}</strong><small>眼睛 {row.marketEye?.status ?? "WAIT"} · 事实 {row.brain.factCount}</small></> : "等待大脑事实"}</td>
+                <td>{row.brain ? <><strong>{row.brain.selected}</strong><small>眼睛 {row.marketEye?.status ?? "WAIT"} · 事实 {row.brain.factCount}</small><small>{row.businessState === "WAIT" ? (row.waitReason ?? row.marketEye?.reason ?? "等待证据闭合") : row.marketEye?.reason}</small></> : "等待大脑事实"}</td>
                 <td>{price(row.price)}<small>{flow ? `${flow.ageMs}ms` : "-"}</small></td>
                 <td>{flow ? <><strong>{price(flow.bidWallPrice)}</strong><small>{money(flow.bidWallNotional)} · {row.bidDistanceBps?.toFixed(1)} bps</small></> : "-"}</td>
                 <td>{flow ? <><strong>{price(flow.askWallPrice)}</strong><small>{money(flow.askWallNotional)} · {row.askDistanceBps?.toFixed(1)} bps</small></> : "-"}</td>
