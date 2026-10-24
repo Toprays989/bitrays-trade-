@@ -103,7 +103,10 @@ export async function PATCH(request: Request) {
           // Binance has returned both permissions:["SPOT"] and, for some
           // virtual subaccounts, accountType:"SPOT" without permissions.
           const spotPermission = permissions.includes("SPOT") || String(spot.accountType || "").toUpperCase() === "SPOT";
-          return { canTrade: spotPermission, tradeTestAccepted: true, totalWalletBalance: spot.balances?.reduce((sum, balance) => sum + Number(balance.free) + Number(balance.locked), 0) ?? 0, totalUnrealizedProfit: 0, totalMarginBalance: 0, totalPositionInitialMargin: 0, totalOpenOrderInitialMargin: 0, availableBalance: 0, hedgeMode: false, latencyMs: 0, usedWeight: 0, accountCanTradeReported: spotPermission, permissions, accountType: spot.accountType };
+          const usdt = spot.balances?.find((balance) => String(balance.asset || "").toUpperCase() === "USDT");
+          const usdtFree = Number(usdt?.free || 0);
+          const usdtLocked = Number(usdt?.locked || 0);
+          return { canTrade: spotPermission, tradeTestAccepted: true, totalWalletBalance: spot.balances?.reduce((sum, balance) => sum + Number(balance.free) + Number(balance.locked), 0) ?? 0, totalUnrealizedProfit: 0, totalMarginBalance: 0, totalPositionInitialMargin: 0, totalOpenOrderInitialMargin: 0, availableBalance: Number.isFinite(usdtFree) ? usdtFree : 0, hedgeMode: false, latencyMs: 0, usedWeight: 0, accountCanTradeReported: spotPermission, permissions, accountType: spot.accountType, spotUsdtFree: usdtFree, spotUsdtLocked: usdtLocked };
         })
         : await verifyLiveAccount(credentials);
       const now = new Date();

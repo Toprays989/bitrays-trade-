@@ -59,8 +59,8 @@ export async function GET(request: Request) {
     defaults: SPOT_CHALLENGE_DEFAULTS,
     spotAccounts: accounts.map((account) => {
       const credential = credentials.find((item) => item.accountId === account.accountId);
-      return credential ? { accountId: account.accountId, name: account.name, credentialId: credential.id, label: credential.label, apiKeyMask: credential.apiKeyMask, lastVerifiedAt: credential.lastVerifiedAt } : null;
-    }).filter((account): account is { accountId: string; name: string; credentialId: number; label: string; apiKeyMask: string; lastVerifiedAt: Date | null } => account !== null),
+      return credential ? { accountId: account.accountId, name: account.name, credentialId: credential.id, label: credential.label, apiKeyMask: credential.apiKeyMask, lastVerifiedAt: credential.lastVerifiedAt, totalWalletBalance: credential.totalWalletBalance, availableBalance: credential.availableBalance } : null;
+  }).filter((account): account is { accountId: string; name: string; credentialId: number; label: string; apiKeyMask: string; lastVerifiedAt: Date | null; totalWalletBalance: number | null; availableBalance: number | null } => account !== null),
   });
 }
 
