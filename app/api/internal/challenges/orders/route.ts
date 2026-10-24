@@ -41,15 +41,20 @@ export async function POST(request: Request) {
   if (challenge.accountId.startsWith("PAPER-")) {
     const [paper] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, challenge.ownerEmail), eq(paperAccounts.accountId, challenge.accountId))).limit(1);
     if (!paper || paper.status !== "ACTIVE") return Response.json({ error: "PAPER 虚拟账户不可用" }, { status: 409 });
-    const whitelist = await db.select({ symbol: spotWhitelistSymbols.symbol }).from(spotWhitelistSymbols).where(and(eq(spotWhitelistSymbols.versionId, challenge.whitelistVersionId), eq(spotWhitelistSymbols.eligible, true), eq(spotWhitelistSymbols.operatorSelected, true)));
-    if (!new Set(whitelist.map((row) => row.symbol)).has(symbol)) return Response.json({ error: "交易对不在挑战白名单中" }, { status: 409 });
     const quantity = Number(body.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) return Response.json({ error: "PAPER 挑战订单数量无效" }, { status: 400 });
     const price = await getBinanceSpotTickerPrice(symbol);
     if (!Number.isFinite(price) || price <= 0) return Response.json({ error: "公共行情暂不可用" }, { status: 503 });
+    let gate;
+    try {
+      const whitelist = await db.select({ symbol: spotWhitelistSymbols.symbol }).from(spotWhitelistSymbols).where(and(eq(spotWhitelistSymbols.versionId, challenge.whitelistVersionId), eq(spotWhitelistSymbols.eligible, true), eq(spotWhitelistSymbols.operatorSelected, true)));
+      gate = gateSpotChallengeOrder({ challengeStatus: challenge.status, symbol, allowedSymbols: new Set(whitelist.map((row) => row.symbol)), side: body.side === "SELL" ? "SELL" : "BUY", orderType: "MARKET", quantity, referencePrice: price, clientOrderId });
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 409 });
+    }
     const now = new Date();
-    const fee = quantity * price * paper.feeRateBps / 10_000;
-    const [filled] = await db.insert(challengeOrders).values({ challengeId, ownerEmail: challenge.ownerEmail, accountId: challenge.accountId, credentialId: 0, symbol, side: body.side === "SELL" ? "SELL" : "BUY", orderType: "MARKET", quantity, quoteOrderQty: null, limitPrice: null, reservedNotionalUsdt: quantity * price, clientOrderId, status: "FILLED", executedQuantity: quantity, averagePrice: price, feeUsdt: fee, responseJson: JSON.stringify({ environment: "PAPER", price }), createdAt: now, updatedAt: now }).returning();
+    const fee = gate.reservedNotionalUsdt * paper.feeRateBps / 10_000;
+    const [filled] = await db.insert(challengeOrders).values({ challengeId, ownerEmail: challenge.ownerEmail, accountId: challenge.accountId, credentialId: 0, symbol, side: gate.order.side, orderType: "MARKET", quantity: gate.order.quantity ?? quantity, quoteOrderQty: null, limitPrice: null, reservedNotionalUsdt: gate.reservedNotionalUsdt, clientOrderId, status: "FILLED", executedQuantity: gate.order.quantity ?? quantity, averagePrice: price, feeUsdt: fee, responseJson: JSON.stringify({ environment: "PAPER", price, whitelist: true, riskGate: true }), createdAt: now, updatedAt: now }).returning();
     return Response.json({ ok: true, environment: "PAPER", order: filled });
   }
   const [credential] = await db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.id, challenge.credentialId), eq(exchangeCredentials.ownerEmail, challenge.ownerEmail), eq(exchangeCredentials.accountId, challenge.accountId))).limit(1);

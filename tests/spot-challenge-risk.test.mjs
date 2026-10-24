@@ -24,3 +24,9 @@ test("stale market data forces reduce only", () => {
   const result = evaluateSpotChallengeRisk({ capitalUsdt: 1000, equityUsdt: 1000, positions: [], pendingOrders: [], websocketAgeMs: 3001 });
   assert.equal(result.status, "REDUCE_ONLY");
 });
+
+test("challenge risk returns dynamic settlement probabilities", () => {
+  const result = evaluateSpotChallengeRisk({ capitalUsdt: 100, equityUsdt: 100, positions: [], pendingOrders: [], websocketAgeMs: 0 });
+  assert.ok(result.successProbability !== null && result.successProbability > 0);
+  assert.ok(result.failureProbability !== null && result.failureProbability > 0);
+});

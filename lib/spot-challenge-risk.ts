@@ -55,6 +55,27 @@ function maxGroupExposure(items: Array<{ symbol: string; notionalUsdt: number; c
   return Math.max(0, ...groups.values());
 }
 
+function clampProbability(value: number) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function dynamicProbabilities(input: {
+  netPnlPercent: number;
+  riskUsedPercent: number;
+  volatility24hPercent?: number;
+  websocketAgeMs?: number;
+  status: SpotChallengeStatus;
+}) {
+  const volatilityPenalty = Math.max(0, finite(input.volatility24hPercent) - 4) * 0.025;
+  const latencyPenalty = finite(input.websocketAgeMs) > 3_000 ? 0.18 : 0;
+  const pressurePenalty = Math.max(0, input.riskUsedPercent - 1) * 0.08;
+  const progress = (input.netPnlPercent + 3) / 15;
+  const success = clampProbability(0.5 + progress * 0.42 - volatilityPenalty - latencyPenalty - pressurePenalty);
+  const failure = clampProbability(0.5 - progress * 0.42 + volatilityPenalty + latencyPenalty + pressurePenalty);
+  const stressFailure = clampProbability(failure + volatilityPenalty * 0.6 + (input.status === "PROTECT" || input.status === "REDUCE_ONLY" ? 0.12 : 0));
+  return { success, failure, stressFailure };
+}
+
 export function evaluateSpotChallengeRisk(input: SpotChallengeRiskInput): SpotChallengeRiskResult {
   const capital = Math.max(0, finite(input.capitalUsdt));
   const equity = Math.max(0, finite(input.equityUsdt));
@@ -125,6 +146,14 @@ export function evaluateSpotChallengeRisk(input: SpotChallengeRiskInput): SpotCh
     reasons.push("高相关资产组合暴露超过上限");
   }
 
+  const probabilities = dynamicProbabilities({
+    netPnlPercent,
+    riskUsedPercent,
+    volatility24hPercent: input.volatility24hPercent,
+    websocketAgeMs: input.websocketAgeMs,
+    status,
+  });
+
   return {
     status,
     netPnlUsdt,
@@ -134,9 +163,9 @@ export function evaluateSpotChallengeRisk(input: SpotChallengeRiskInput): SpotCh
     pressureLossUsdt,
     riskUsedPercent,
     reservedNotionalUsdt,
-    successProbability: input.successProbability == null ? null : finite(input.successProbability),
-    failureProbability: input.failureProbability == null ? null : finite(input.failureProbability),
-    stressFailureProbability: input.stressFailureProbability == null ? null : finite(input.stressFailureProbability),
+    successProbability: input.successProbability == null ? probabilities.success : finite(input.successProbability),
+    failureProbability: input.failureProbability == null ? probabilities.failure : finite(input.failureProbability),
+    stressFailureProbability: input.stressFailureProbability == null ? probabilities.stressFailure : finite(input.stressFailureProbability),
     reasons: [...new Set(reasons)],
   };
 }
