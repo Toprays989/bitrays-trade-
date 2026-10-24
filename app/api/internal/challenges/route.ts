@@ -3,15 +3,23 @@ import { and, eq, inArray, lte } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { challengeInstances, challengeOrders, challengeRiskSnapshots, exchangeCredentials, paperAccounts, spotWhitelistSymbols } from "../../../../db/schema";
 import { decryptCredential, credentialContext } from "../../../../lib/credential-vault";
-import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotOpenOrders, getBinanceSpotTickerPrice } from "../../../../lib/binance-spot-live";
+import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotKlines, getBinanceSpotOpenOrders, getBinanceSpotTicker24h, getBinanceSpotTickerPrice } from "../../../../lib/binance-spot-live";
 import { evaluateSpotChallengeRisk } from "../../../../lib/spot-challenge-risk";
 import { readSpotAvailableUsdt } from "../../../../lib/spot-account-capital";
+import { planSpotChallengeLongEntry } from "../../../../lib/spot-challenge-strategy";
 
 export const dynamic = "force-dynamic";
 
 function authorized(request: Request) {
   const expected = (env as unknown as { NQ_INTERNAL_RISK_TOKEN?: string }).NQ_INTERNAL_RISK_TOKEN ?? "";
   return expected.length >= 32 && request.headers.get("authorization") === `Bearer ${expected}`;
+}
+
+async function submitAutomaticOrder(input: { challengeId: number; symbol: string; side: "BUY" | "SELL"; quantity?: number; quoteOrderQty?: number; clientOrderId: string }) {
+  const base = (env as unknown as { NQ_PUBLIC_APP_URL?: string }).NQ_PUBLIC_APP_URL || "http://127.0.0.1:3000";
+  const token = (env as unknown as { NQ_INTERNAL_RISK_TOKEN?: string }).NQ_INTERNAL_RISK_TOKEN || "";
+  const response = await fetch(`${base.replace(/\/$/, "")}/api/internal/challenges/orders`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(input) });
+  return { ok: response.ok, payload: await response.json().catch(() => ({})) };
 }
 
 async function keysFor(credential: typeof exchangeCredentials.$inferSelect, ownerEmail: string, accountId: string) {
@@ -28,6 +36,21 @@ export async function POST(request: Request) {
   const results: Array<Record<string, unknown>> = [];
   for (const challenge of challenges) {
     try {
+      const filledBuys = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.side, "BUY"), eq(challengeOrders.status, "FILLED"))).limit(100);
+      const automaticExits: Array<Record<string, unknown>> = [];
+      for (const order of filledBuys) {
+        const entry = Number(order.averagePrice);
+        const quantity = Number(order.executedQuantity || order.quantity);
+        if (!(entry > 0) || !(quantity > 0)) continue;
+        const ticker = await getBinanceSpotTicker24h(order.symbol).catch(() => null);
+        const price = ticker?.lastPrice || 0;
+        if (!(price > 0)) continue;
+        const takeProfit = price >= entry * 1.02;
+        const stopLoss = price <= entry * 0.99;
+        if (!takeProfit && !stopLoss) continue;
+        const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: order.symbol, side: "SELL", quantity, clientOrderId: `challenge-${challenge.id}-exit-${order.id}-${takeProfit ? "tp" : "sl"}` });
+        automaticExits.push({ symbol: order.symbol, reason: takeProfit ? "TAKE_PROFIT" : "STOP_LOSS", result });
+      }
       if (challenge.accountId.startsWith("PAPER-")) {
         const [paper] = await db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, challenge.ownerEmail), eq(paperAccounts.accountId, challenge.accountId))).limit(1);
         if (!paper) throw new Error("PAPER 虚拟账户不存在");
@@ -37,7 +60,25 @@ export async function POST(request: Request) {
         const status = equityUsdt >= challenge.capitalUsdt * 1.12 ? "SUCCESS_PENDING_CLEAR" : equityUsdt <= challenge.capitalUsdt * 0.97 ? "FAILURE_PENDING_CLEAR" : challenge.status;
         await db.insert(challengeRiskSnapshots).values({ challengeId: challenge.id, equityUsdt, netPnlUsdt, riskState: status, metricsJson: JSON.stringify({ environment: "PAPER", source: "paper_accounts" }), createdAt: now });
         await db.update(challengeInstances).set({ status, equityUsdt, netPnlUsdt, updatedAt: now }).where(eq(challengeInstances.id, challenge.id));
-        results.push({ challengeId: challenge.id, environment: "PAPER", status, equityUsdt });
+        const automaticOrders: Array<Record<string, unknown>> = [];
+        if (["RUNNING", "CAUTION"].includes(status)) {
+          const btc = await getBinanceSpotTicker24h("BTCUSDT").catch(() => null);
+          const whitelist = await db.select().from(spotWhitelistSymbols).where(and(eq(spotWhitelistSymbols.versionId, challenge.whitelistVersionId), eq(spotWhitelistSymbols.eligible, true), eq(spotWhitelistSymbols.operatorSelected, true)));
+          for (const row of whitelist.slice(0, 20)) {
+            const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
+            if (existing.length) continue;
+            const ticker = await getBinanceSpotTicker24h(row.symbol).catch(() => null);
+            if (!ticker) continue;
+            const weekly = await getBinanceSpotKlines(row.symbol, "1w", 52).catch(() => []);
+            if (!weekly.length) continue;
+            const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: 0, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0 });
+            if (signal.action !== "BUY") continue;
+            const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${row.symbol}` });
+            automaticOrders.push({ symbol: row.symbol, signal, result });
+            if (automaticOrders.length >= 2) break;
+          }
+        }
+        results.push({ challengeId: challenge.id, environment: "PAPER", status, equityUsdt, automaticOrders, automaticExits });
         continue;
       }
       const [credential] = await db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.id, challenge.credentialId), eq(exchangeCredentials.ownerEmail, challenge.ownerEmail))).limit(1);
@@ -84,7 +125,24 @@ export async function POST(request: Request) {
       const status = challenge.status === "REDUCE_ONLY" && !["SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR"].includes(risk.status) ? "REDUCE_ONLY" : risk.status;
       await db.insert(challengeRiskSnapshots).values({ challengeId: challenge.id, equityUsdt, netPnlUsdt: risk.netPnlUsdt, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, pressureLossUsdt: risk.pressureLossUsdt, var95Usdt: risk.pressureLossUsdt, riskState: status, metricsJson: JSON.stringify({ positions, pendingOrders, reasons: risk.reasons }), createdAt: now });
       await db.update(challengeInstances).set({ status, equityUsdt, netPnlUsdt: risk.netPnlUsdt, riskUsedPercent: risk.riskUsedPercent, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, updatedAt: now }).where(eq(challengeInstances.id, challenge.id));
-      results.push({ challengeId: challenge.id, status, equityUsdt, riskUsedPercent: risk.riskUsedPercent });
+      const automaticOrders: Array<Record<string, unknown>> = [];
+      if (["RUNNING", "CAUTION"].includes(status)) {
+        const btc = await getBinanceSpotTicker24h("BTCUSDT").catch(() => null);
+        for (const row of whitelist.slice(0, 20)) {
+          const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
+          if (existing.length) continue;
+          const ticker = await getBinanceSpotTicker24h(row.symbol).catch(() => null);
+          if (!ticker) continue;
+          const weekly = await getBinanceSpotKlines(row.symbol, "1w", 52).catch(() => []);
+          if (!weekly.length) continue;
+          const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: risk.riskUsedPercent, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0 });
+          if (signal.action !== "BUY") continue;
+          const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${row.symbol}` });
+          automaticOrders.push({ symbol: row.symbol, signal, result });
+          if (automaticOrders.length >= 2) break;
+        }
+      }
+      results.push({ challengeId: challenge.id, status, equityUsdt, riskUsedPercent: risk.riskUsedPercent, successProbability: risk.successProbability, failureProbability: risk.failureProbability, automaticOrders, automaticExits });
     } catch (error) {
       results.push({ challengeId: challenge.id, status: "ERROR", error: error instanceof Error ? error.message : String(error) });
     }
