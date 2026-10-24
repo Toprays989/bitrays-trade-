@@ -196,7 +196,9 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExec
       const response = await fetch("/api/control/challenges", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 0, accountId }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "挑战遗留委托清理失败");
-      setToast(`已释放 ${result.released ?? 0} 笔挑战遗留委托${selected ? `（${selected.accountId}）` : ""}`);
+      const usdt = result.usdt && typeof result.usdt === "object" ? result.usdt as { free?: number; locked?: number } : null;
+      const assetSummary = Array.isArray(result.nonZeroAssets) ? result.nonZeroAssets.map((asset: { asset?: string; free?: number; locked?: number }) => `${asset.asset || "?"} ${(Number(asset.free || 0) + Number(asset.locked || 0)).toFixed(8)}`).join(", ") : "";
+      setToast(`已释放 ${result.released ?? 0} 笔挑战遗留委托${selected ? `（${selected.accountId}）` : ""}；USDT 可用 ${Number(usdt?.free || 0).toFixed(2)}、锁定 ${Number(usdt?.locked || 0).toFixed(2)}${assetSummary ? `；非零资产：${assetSummary}` : ""}`);
       await load();
     } catch (error) {
       setToast(error instanceof Error ? error.message : "挑战遗留委托清理失败");
