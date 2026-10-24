@@ -204,7 +204,10 @@ export async function DELETE(request: Request) {
       const openOrders = await getBinanceSpotOpenOrders(keys);
       const orphaned = openOrders.filter((order) => order.clientOrderId.startsWith("challenge-"));
       for (const order of orphaned) await cancelBinanceSpotOrder(keys, order.symbol, order.clientOrderId);
-      return Response.json({ ok: true, released: orphaned.length, accountId, scope: "challenge-client-orders" });
+      const account = await getBinanceSpotAccount(keys);
+      const nonZeroAssets = (account.balances || []).map((balance) => ({ asset: balance.asset, free: Number(balance.free), locked: Number(balance.locked) })).filter((balance) => balance.free > 0 || balance.locked > 0);
+      const usdt = nonZeroAssets.find((balance) => balance.asset.toUpperCase() === "USDT") || { asset: "USDT", free: 0, locked: 0 };
+      return Response.json({ ok: true, released: orphaned.length, accountId, scope: "challenge-client-orders", openOrders: openOrders.length, usdt, nonZeroAssets });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "清理挑战遗留委托失败" }, { status: 502 });
     }
