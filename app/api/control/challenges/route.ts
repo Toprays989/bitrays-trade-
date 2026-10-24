@@ -98,6 +98,17 @@ export async function POST(request: Request) {
   if (!account || !credential || !version) return Response.json({ error: "账户、密钥或白名单版本不存在" }, { status: 404 });
   if (credential.exchange !== "BINANCE_SPOT") return Response.json({ error: "挑战赛必须绑定 Binance Spot 密钥" }, { status: 409 });
   if (version.status !== "PUBLISHED") return Response.json({ error: "只能使用已发布的白名单版本" }, { status: 409 });
+  try {
+    const liveAccount = await getBinanceSpotAccount({
+      apiKey: await decryptCredential(credential.apiKeyCiphertext, credential.apiKeyIv, credentialContext(user.email, accountId, "api-key")),
+      secretKey: await decryptCredential(credential.secretKeyCiphertext, credential.secretKeyIv, credentialContext(user.email, accountId, "secret-key")),
+    });
+    const capital = readSpotAvailableUsdt(liveAccount);
+    if (!capital.isSpot) return Response.json({ error: "绑定的 Binance 账户不是 Spot 账户" }, { status: 409 });
+    if (capital.availableUsdt < capitalUsdt) return Response.json({ error: `现货账户可用 USDT 不足：需要 ${capitalUsdt.toFixed(2)}，当前 ${capital.availableUsdt.toFixed(2)}。请降低挑战本金或补充现货余额` }, { status: 409 });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "现货账户余额校验失败" }, { status: 502 });
+  }
   const active = await db.select({ id: challengeInstances.id }).from(challengeInstances).where(and(
     eq(challengeInstances.ownerEmail, user.email),
     eq(challengeInstances.accountId, accountId),
