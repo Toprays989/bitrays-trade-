@@ -2,6 +2,8 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import {
   challengeInstances,
+  challengeOrders,
+  challengeRiskSnapshots,
   paperAccounts,
   spotWhitelistSymbols,
   spotWhitelistVersions,
@@ -139,13 +141,21 @@ export async function PATCH(request: Request) {
   const body = objectBody(await request.json().catch(() => null));
   const id = Number(body?.id);
   const action = body?.action;
-  if (!Number.isInteger(id) || id <= 0 || !["START", "REDUCE_ONLY", "CANCEL"].includes(String(action))) {
+  if (!Number.isInteger(id) || id <= 0 || !["START", "REDUCE_ONLY", "CANCEL", "EDIT"].includes(String(action))) {
     return Response.json({ error: "挑战操作无效" }, { status: 400 });
   }
   const current = await getDb().select().from(challengeInstances).where(and(eq(challengeInstances.id, id), eq(challengeInstances.ownerEmail, user.email))).limit(1);
   if (!current.length) return Response.json({ error: "挑战实例不存在" }, { status: 404 });
   const challenge = current[0];
   const now = new Date();
+  if (action === "EDIT") {
+    if (challenge.status !== "DRAFT") return Response.json({ error: "只有草稿挑战可以编辑" }, { status: 409 });
+    const capitalUsdt = Number(body?.capitalUsdt);
+    if (!Number.isInteger(capitalUsdt) || !SPOT_CHALLENGE_CAPITALS.includes(capitalUsdt as never)) return Response.json({ error: "挑战本金档位无效" }, { status: 400 });
+    const config = { ...challengeRiskConfig(), thresholds: challengeThresholds(capitalUsdt) };
+    const [updated] = await getDb().update(challengeInstances).set({ capitalUsdt, equityUsdt: null, netPnlUsdt: null, riskConfigJson: JSON.stringify(config), updatedAt: now }).where(eq(challengeInstances.id, id)).returning();
+    return Response.json({ challenge: updated });
+  }
   if (action === "START" && challenge.status !== "DRAFT") return Response.json({ error: "只有草稿挑战可以启动" }, { status: 409 });
   if (action === "START" && !challenge.accountId.startsWith("PAPER-")) {
     const [credential] = await getDb().select().from(exchangeCredentials).where(and(eq(exchangeCredentials.id, challenge.credentialId), eq(exchangeCredentials.ownerEmail, user.email))).limit(1);
@@ -173,4 +183,20 @@ export async function PATCH(request: Request) {
     updatedAt: now,
   }).where(eq(challengeInstances.id, id)).returning();
   return Response.json({ challenge: updated });
+}
+
+export async function DELETE(request: Request) {
+  const user = await requirePermission(request, "trade:strategy:edit");
+  if (isResponse(user)) return user;
+  const body = objectBody(await request.json().catch(() => null));
+  const id = Number(body?.id);
+  if (!Number.isInteger(id) || id <= 0) return Response.json({ error: "挑战实例编号无效" }, { status: 400 });
+  const db = getDb();
+  const [challenge] = await db.select().from(challengeInstances).where(and(eq(challengeInstances.id, id), eq(challengeInstances.ownerEmail, user.email))).limit(1);
+  if (!challenge) return Response.json({ error: "挑战实例不存在" }, { status: 404 });
+  if (["RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING"].includes(challenge.status)) return Response.json({ error: "运行中的挑战必须先结束或完成清算后才能删除" }, { status: 409 });
+  await db.delete(challengeOrders).where(eq(challengeOrders.challengeId, id));
+  await db.delete(challengeRiskSnapshots).where(eq(challengeRiskSnapshots.challengeId, id));
+  await db.delete(challengeInstances).where(eq(challengeInstances.id, id));
+  return Response.json({ ok: true, id });
 }

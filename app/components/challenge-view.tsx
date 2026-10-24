@@ -165,6 +165,26 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExec
     await load();
   }
 
+  async function editChallenge(challenge: Challenge) {
+    if (challenge.status !== "DRAFT") return setToast("只有草稿挑战可以编辑");
+    const next = window.prompt("请输入挑战本金（100、200、500、1000、5000、10000）", String(challenge.capitalUsdt));
+    if (next == null) return;
+    const response = await fetch("/api/control/challenges", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: challenge.id, action: "EDIT", capitalUsdt: Number(next) }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "挑战编辑失败");
+    setToast("挑战草稿已更新");
+    await load();
+  }
+
+  async function deleteChallenge(challenge: Challenge) {
+    if (!window.confirm(`确认删除挑战 #${challenge.id}？删除后不可恢复。`)) return;
+    const response = await fetch("/api/control/challenges", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: challenge.id }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "挑战删除失败");
+    setToast(`挑战 #${challenge.id} 已删除`);
+    await load();
+  }
+
   const activeChallenge = challenges.find((challenge) => ["RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING"].includes(challenge.status)) || challenges[0];
   const activeCapital = activeChallenge?.capitalUsdt || Number(capitalUsdt) || 0;
   const activeEquity = activeChallenge?.equityUsdt ?? activeCapital;
@@ -210,7 +230,7 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExec
 
       {!whitelistPage && <section className="panel control-panel">
         <div className="panel-head"><div><h2>挑战实例</h2><p>成功线 +12%，失败线 -3%；达到阈值后自动进入清仓流程。</p></div></div>
-        <div className="table-scroll"><table className="data-table"><thead><tr><th>ID</th><th>账户</th><th>本金</th><th>状态</th><th>净权益</th><th>成功概率</th><th>失败概率</th><th>操作</th></tr></thead><tbody>{challenges.map((challenge) => <tr key={challenge.id}><td>#{challenge.id}</td><td>{challenge.accountId}</td><td>{challenge.capitalUsdt.toFixed(2)} USDT</td><td><span className="source-tag auto">{challenge.status}</span></td><td>{challenge.equityUsdt == null ? "—" : `${challenge.equityUsdt.toFixed(2)} USDT`}</td><td>{challenge.successProbability == null ? "—" : `${(challenge.successProbability * 100).toFixed(1)}%`}</td><td>{challenge.failureProbability == null ? "—" : `${(challenge.failureProbability * 100).toFixed(1)}%`}</td><td className="panel-actions">{challenge.status === "DRAFT" && <button className="ghost-btn" onClick={() => void changeStatus(challenge.id, "START").catch((error) => setToast(error instanceof Error ? error.message : "启动失败"))}>启动</button>}{["RUNNING", "CAUTION", "PROTECT"].includes(challenge.status) && <button className="ghost-btn" onClick={() => void changeStatus(challenge.id, "REDUCE_ONLY").catch((error) => setToast(error instanceof Error ? error.message : "切换失败"))}>只减仓</button>}{!["SUCCEEDED", "FAILED", "CLEARING"].includes(challenge.status) && <button className="danger-btn" onClick={() => void changeStatus(challenge.id, "CANCEL").catch((error) => setToast(error instanceof Error ? error.message : "结束失败"))}>结束</button>}</td></tr>)}</tbody></table>{challenges.length === 0 && <div className="empty">暂无挑战实例</div>}</div>
+        <div className="table-scroll"><table className="data-table"><thead><tr><th>ID</th><th>账户</th><th>本金</th><th>状态</th><th>净权益</th><th>成功概率</th><th>失败概率</th><th>操作</th></tr></thead><tbody>{challenges.map((challenge) => <tr key={challenge.id}><td>#{challenge.id}</td><td>{challenge.accountId}</td><td>{challenge.capitalUsdt.toFixed(2)} USDT</td><td><span className="source-tag auto">{challenge.status}</span></td><td>{challenge.equityUsdt == null ? "—" : `${challenge.equityUsdt.toFixed(2)} USDT`}</td><td>{challenge.successProbability == null ? "—" : `${(challenge.successProbability * 100).toFixed(1)}%`}</td><td>{challenge.failureProbability == null ? "—" : `${(challenge.failureProbability * 100).toFixed(1)}%`}</td><td className="panel-actions">{challenge.status === "DRAFT" && <><button className="ghost-btn" onClick={() => void editChallenge(challenge).catch((error) => setToast(error instanceof Error ? error.message : "编辑失败"))}>编辑</button><button className="ghost-btn" onClick={() => void changeStatus(challenge.id, "START").catch((error) => setToast(error instanceof Error ? error.message : "启动失败"))}>启动</button></>}{["RUNNING", "CAUTION", "PROTECT"].includes(challenge.status) && <button className="ghost-btn" onClick={() => void changeStatus(challenge.id, "REDUCE_ONLY").catch((error) => setToast(error instanceof Error ? error.message : "切换失败"))}>只减仓</button>}{!["SUCCEEDED", "FAILED", "CLEARING"].includes(challenge.status) && <button className="danger-btn" onClick={() => void changeStatus(challenge.id, "CANCEL").catch((error) => setToast(error instanceof Error ? error.message : "切换失败"))}>结束</button>}{!["RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING"].includes(challenge.status) && <button className="danger-btn" onClick={() => void deleteChallenge(challenge).catch((error) => setToast(error instanceof Error ? error.message : "删除失败"))}>删除</button>}</td></tr>)}</tbody></table>{challenges.length === 0 && <div className="empty">暂无挑战实例</div>}</div>
       </section>}
     </div>
   );
