@@ -107,20 +107,43 @@ export async function POST(request: Request) {
       }
       const whitelist = await db.select().from(spotWhitelistSymbols).where(and(eq(spotWhitelistSymbols.versionId, challenge.whitelistVersionId), eq(spotWhitelistSymbols.eligible, true), eq(spotWhitelistSymbols.operatorSelected, true)));
       const allowedSymbols = new Set(whitelist.map((row) => row.symbol));
-      const balances = (account.balances || []).map((row) => ({ asset: row.asset.toUpperCase(), quantity: Number(row.free || 0) + Number(row.locked || 0) })).filter((row) => Number.isFinite(row.quantity) && row.quantity > 0);
-      const usdt = balances.find((row) => row.asset === "USDT")?.quantity || 0;
+      // Challenge equity is ring-fenced to the challenge capital. Never use
+      // the whole Spot wallet here: an account can contain unrelated USDT or
+      // assets, and counting them would make a 100 USDT challenge instantly
+      // pass as soon as the account holds 120 USDT.
+      const filledChallengeOrders = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), inArray(challengeOrders.status, ["FILLED", "PARTIALLY_FILLED"]))).limit(200);
+      let challengeCash = challenge.capitalUsdt;
+      const challengeQuantities = new Map<string, number>();
+      const challengeCost = new Map<string, number>();
+      for (const order of filledChallengeOrders) {
+        const quantity = Number(order.executedQuantity || order.quantity || 0);
+        const price = Number(order.averagePrice || 0);
+        if (!(quantity > 0) || !(price > 0)) continue;
+        const fee = Number(order.feeUsdt || 0);
+        const notional = quantity * price;
+        const current = challengeQuantities.get(order.symbol) || 0;
+        const currentCost = challengeCost.get(order.symbol) || 0;
+        if (order.side === "BUY") {
+          challengeCash -= notional + fee;
+          challengeQuantities.set(order.symbol, current + quantity);
+          challengeCost.set(order.symbol, currentCost + notional + fee);
+        } else {
+          challengeCash += notional - fee;
+          challengeQuantities.set(order.symbol, Math.max(0, current - quantity));
+          challengeCost.set(order.symbol, Math.max(0, currentCost - (current > 0 ? (currentCost / current) * quantity : notional) - fee));
+        }
+      }
       const positions: Array<{ symbol: string; notionalUsdt: number; pressureLossPercent: number; correlationGroup: string }> = [];
-      let equityUsdt = usdt;
-      for (const balance of balances.filter((row) => row.asset !== "USDT")) {
-        const symbol = `${balance.asset}USDT`;
+      let equityUsdt = challengeCash;
+      for (const [symbol, quantity] of challengeQuantities) {
+        if (!(quantity > 0)) continue;
         if (!allowedSymbols.has(symbol)) continue;
         const price = await getBinanceSpotTickerPrice(symbol);
-        const notionalUsdt = balance.quantity * price;
+        const notionalUsdt = quantity * price;
         equityUsdt += notionalUsdt;
-        positions.push({ symbol, notionalUsdt, pressureLossPercent: 10, correlationGroup: balance.asset === "BTC" || balance.asset === "ETH" ? "majors" : balance.asset });
+        positions.push({ symbol, notionalUsdt, pressureLossPercent: 10, correlationGroup: symbol.startsWith("BTC") || symbol.startsWith("ETH") ? "majors" : symbol.replace(/USDT$/, "") });
       }
-      const openOrders = await getBinanceSpotOpenOrders(keys);
-      const pendingOrders = openOrders.filter((order) => allowedSymbols.has(order.symbol)).map((order) => ({ symbol: order.symbol, reservedNotionalUsdt: Number(order.origQty) * Number(order.price), pressureLossPercent: 10, correlationGroup: order.symbol.startsWith("BTC") || order.symbol.startsWith("ETH") ? "majors" : order.symbol.replace(/USDT$/, "") }));
+      const pendingOrders = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED"]))).then((orders) => orders.filter((order) => allowedSymbols.has(order.symbol)).map((order) => ({ symbol: order.symbol, reservedNotionalUsdt: Number(order.reservedNotionalUsdt || 0), pressureLossPercent: 10, correlationGroup: order.symbol.startsWith("BTC") || order.symbol.startsWith("ETH") ? "majors" : order.symbol.replace(/USDT$/, "") })));
       const risk = evaluateSpotChallengeRisk({ capitalUsdt: challenge.capitalUsdt, equityUsdt, positions, pendingOrders, websocketAgeMs: 0 });
       const status = challenge.status === "REDUCE_ONLY" && !["SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR"].includes(risk.status) ? "REDUCE_ONLY" : risk.status;
       await db.insert(challengeRiskSnapshots).values({ challengeId: challenge.id, equityUsdt, netPnlUsdt: risk.netPnlUsdt, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, pressureLossUsdt: risk.pressureLossUsdt, var95Usdt: risk.pressureLossUsdt, riskState: status, metricsJson: JSON.stringify({ positions, pendingOrders, reasons: risk.reasons }), createdAt: now });
