@@ -71,7 +71,7 @@ export function AccountDirectoryRow({
         </span>
       </td>
       <td>
-        Binance<small>USDⓈ-M</small>
+        Binance<small>{credential?.exchange === "BINANCE_SPOT" ? "现货 Spot" : "USDⓈ-M 合约"}</small>
       </td>
       <td>
         <input
@@ -107,7 +107,9 @@ export function AccountDirectoryRow({
           : "--"}
         <small>
           {hasLiveBalance
-            ? `钱包 ${formatBalance(funding!.walletBalanceUsdt!)} · 可再开仓 ${formatBalance(funding!.availableToOpenUsdt!)} USDT${funding!.fresh ? "" : " · 数据过期"}`
+            ? credential?.exchange === "BINANCE_SPOT"
+              ? `总资产 ${formatBalance(funding!.walletBalanceUsdt!)}（含非 USDT） · 可用 USDT ${formatBalance(funding!.availableToOpenUsdt!)}${funding!.fresh ? "" : " · 数据过期"}`
+              : `钱包 ${formatBalance(funding!.walletBalanceUsdt!)} · 可再开仓 ${formatBalance(funding!.availableToOpenUsdt!)} USDT${funding!.fresh ? "" : " · 数据过期"}`
             : credential
               ? "请校验密钥以同步 Binance 合约余额"
               : "配置并校验密钥后显示实盘余额"}
