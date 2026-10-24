@@ -187,6 +187,24 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExec
     await load();
   }
 
+  async function releaseOrphanedOrders() {
+    if (executionEnvironment !== "LIVE" || !accountId) return;
+    const selected = spotAccounts.find((account) => account.accountId === accountId);
+    if (!window.confirm(`确认扫描并撤销账户 ${accountId} 中由挑战赛遗留的未成交委托？仅处理 clientOrderId 以 challenge- 开头的委托。`)) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/control/challenges", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: 0, accountId }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "挑战遗留委托清理失败");
+      setToast(`已释放 ${result.released ?? 0} 笔挑战遗留委托${selected ? `（${selected.accountId}）` : ""}`);
+      await load();
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "挑战遗留委托清理失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const activeChallenge = challenges.find((challenge) => ["RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING"].includes(challenge.status)) || challenges[0];
   const activeCapital = activeChallenge?.capitalUsdt || Number(capitalUsdt) || 0;
   const activeEquity = activeChallenge?.equityUsdt ?? activeCapital;
@@ -221,7 +239,7 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExec
           <label>白名单版本<select value={whitelistVersionId} onChange={(event) => setWhitelistVersionId(event.target.value)}><option value="">请选择已发布版本</option>{versions.filter((version) => version.status === "PUBLISHED").map((version) => <option value={version.id} key={version.id}>{version.version} · {version.symbols.filter((symbol) => symbol.eligible && symbol.operatorSelected).length} 个交易对</option>)}</select></label>
           <label>挑战本金<select value={capitalUsdt} onChange={(event) => setCapitalUsdt(event.target.value)}>{(capitals.length ? capitals : [100, 200, 500, 1000, 5000, 10000]).map((capital) => <option value={capital} key={capital}>{capital} USDT</option>)}</select></label>
         </div>
-        <button className="primary-btn" disabled={busy || !accountId || !credentialId || !whitelistVersionId} onClick={() => void createChallenge()}>{busy ? "创建中…" : "创建挑战草稿"}</button>
+        <div className="panel-actions"><button className="primary-btn" disabled={busy || !accountId || !credentialId || !whitelistVersionId} onClick={() => void createChallenge()}>{busy ? "创建中…" : "创建挑战草稿"}</button>{executionEnvironment === "LIVE" && <button className="danger-btn" disabled={busy || !accountId} onClick={() => void releaseOrphanedOrders()}>{busy ? "处理中…" : "释放挑战遗留委托"}</button>}</div>
       </section>
       </>}
 

@@ -12,7 +12,7 @@ import {
 } from "../../../../db/schema";
 import { isResponse, requirePermission } from "../shared";
 import { decryptCredential, credentialContext } from "../../../../lib/credential-vault";
-import { getBinanceSpotAccount } from "../../../../lib/binance-spot-live";
+import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotOpenOrders } from "../../../../lib/binance-spot-live";
 import { readSpotAvailableUsdt } from "../../../../lib/spot-account-capital";
 import {
   SPOT_CHALLENGE_CAPITALS,
@@ -190,11 +190,41 @@ export async function DELETE(request: Request) {
   if (isResponse(user)) return user;
   const body = objectBody(await request.json().catch(() => null));
   const id = Number(body?.id);
-  if (!Number.isInteger(id) || id <= 0) return Response.json({ error: "挑战实例编号无效" }, { status: 400 });
+  const requestedAccountId = typeof body?.accountId === "string" ? body.accountId.trim() : "";
+  if ((!Number.isInteger(id) || id <= 0) && !requestedAccountId) return Response.json({ error: "挑战实例编号无效" }, { status: 400 });
   const db = getDb();
   const [challenge] = await db.select().from(challengeInstances).where(and(eq(challengeInstances.id, id), eq(challengeInstances.ownerEmail, user.email))).limit(1);
-  if (!challenge) return Response.json({ error: "挑战实例不存在" }, { status: 404 });
+  if (!challenge) {
+    const accountId = requestedAccountId;
+    if (!accountId || accountId.startsWith("PAPER-")) return Response.json({ error: "挑战实例不存在" }, { status: 404 });
+    const [credential] = await db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.ownerEmail, user.email), eq(exchangeCredentials.accountId, accountId), eq(exchangeCredentials.exchange, "BINANCE_SPOT"))).limit(1);
+    if (!credential) return Response.json({ error: "该账户没有已验证的 Binance Spot 密钥" }, { status: 404 });
+    try {
+      const keys = { apiKey: await decryptCredential(credential.apiKeyCiphertext, credential.apiKeyIv, credentialContext(user.email, accountId, "api-key")), secretKey: await decryptCredential(credential.secretKeyCiphertext, credential.secretKeyIv, credentialContext(user.email, accountId, "secret-key")) };
+      const openOrders = await getBinanceSpotOpenOrders(keys);
+      const orphaned = openOrders.filter((order) => order.clientOrderId.startsWith("challenge-"));
+      for (const order of orphaned) await cancelBinanceSpotOrder(keys, order.symbol, order.clientOrderId);
+      return Response.json({ ok: true, released: orphaned.length, accountId, scope: "challenge-client-orders" });
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "清理挑战遗留委托失败" }, { status: 502 });
+    }
+  }
   if (["RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING"].includes(challenge.status)) return Response.json({ error: "运行中的挑战必须先结束或完成清算后才能删除" }, { status: 409 });
+  if (!challenge.accountId.startsWith("PAPER-")) {
+    const [credential] = await db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.id, challenge.credentialId), eq(exchangeCredentials.ownerEmail, user.email))).limit(1);
+    if (!credential || credential.exchange !== "BINANCE_SPOT") return Response.json({ error: "挑战绑定的 Spot 密钥不存在，无法安全释放交易所委托" }, { status: 409 });
+    try {
+      const keys = { apiKey: await decryptCredential(credential.apiKeyCiphertext, credential.apiKeyIv, credentialContext(user.email, challenge.accountId, "api-key")), secretKey: await decryptCredential(credential.secretKeyCiphertext, credential.secretKeyIv, credentialContext(user.email, challenge.accountId, "secret-key")) };
+      const orders = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, id), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED"])));
+      for (const order of orders) await cancelBinanceSpotOrder(keys, order.symbol, order.clientOrderId);
+      // A deleted challenge can leave an exchange order without a local row only
+      // after a previous interrupted cleanup; cancel only our own client-id prefix.
+      const openOrders = await getBinanceSpotOpenOrders(keys);
+      for (const order of openOrders.filter((order) => order.clientOrderId.startsWith(`challenge-${id}-`))) await cancelBinanceSpotOrder(keys, order.symbol, order.clientOrderId);
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? `删除前撤销 Binance 委托失败：${error.message}` : "删除前撤销 Binance 委托失败" }, { status: 502 });
+    }
+  }
   await db.delete(challengeOrders).where(eq(challengeOrders.challengeId, id));
   await db.delete(challengeRiskSnapshots).where(eq(challengeRiskSnapshots.challengeId, id));
   await db.delete(challengeInstances).where(eq(challengeInstances.id, id));
