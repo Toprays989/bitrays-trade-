@@ -4196,11 +4196,12 @@ function WorkspacePage({
         pool={pool}
         setToast={setToast}
         executionEnvironment={executionEnvironment}
+        setExecutionEnvironment={setExecutionEnvironment}
       />
     );
 
   if (active === "challenge")
-    return <ChallengeView setToast={setToast} executionEnvironment={executionEnvironment} />;
+    return <ChallengeView setToast={setToast} executionEnvironment={executionEnvironment} setExecutionEnvironment={setExecutionEnvironment} />;
 
   if (active === "wallTrend")
     return (

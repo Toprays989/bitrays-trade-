@@ -30,21 +30,6 @@ export async function GET(request: Request) {
   const user = await requirePermission(request, "trade:dashboard:view");
   if (isResponse(user)) return user;
   const db = getDb();
-  if (/^PAPER-[A-Z0-9_-]{1,20}$/.test(accountId)) {
-    const [[paper], [version]] = await Promise.all([
-      db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, user.email), eq(paperAccounts.accountId, accountId))).limit(1),
-      db.select().from(spotWhitelistVersions).where(and(eq(spotWhitelistVersions.ownerEmail, user.email), eq(spotWhitelistVersions.id, whitelistVersionId))).limit(1),
-    ]);
-    if (!paper) return Response.json({ error: "PAPER 虚拟账户不存在" }, { status: 404 });
-    if (paper.status !== "ACTIVE") return Response.json({ error: "PAPER 虚拟账户当前不可用" }, { status: 409 });
-    if (!version || version.status !== "PUBLISHED") return Response.json({ error: "只能使用已发布的白名单版本" }, { status: 409 });
-    const active = await db.select({ id: challengeInstances.id }).from(challengeInstances).where(and(eq(challengeInstances.ownerEmail, user.email), eq(challengeInstances.accountId, accountId), inArray(challengeInstances.status, ["DRAFT", "RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING", "SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR"]))).limit(1);
-    if (active.length) return Response.json({ error: "该 PAPER 账户已有未结束的挑战实例" }, { status: 409 });
-    const now = new Date();
-    const config = { ...challengeRiskConfig(), thresholds: challengeThresholds(capitalUsdt) };
-    const [challenge] = await db.insert(challengeInstances).values({ ownerEmail: user.email, accountId, credentialId: 0, whitelistVersionId, capitalUsdt, feeRateBps: SPOT_CHALLENGE_DEFAULTS.feeRateBps, status: "DRAFT", riskConfigJson: JSON.stringify(config), modelVersion: `${SPOT_CHALLENGE_DEFAULTS.modelVersion}-paper`, createdAt: now, updatedAt: now }).returning();
-    return Response.json({ challenge, environment: "PAPER", thresholds: config.thresholds }, { status: 201 });
-  }
   const [challenges, versions, accounts, credentials] = await Promise.all([
     db.select().from(challengeInstances)
       .where(eq(challengeInstances.ownerEmail, user.email))
@@ -89,6 +74,21 @@ export async function POST(request: Request) {
     return Response.json({ error: "账户、现货密钥、白名单版本或本金档位无效" }, { status: 400 });
   }
   const db = getDb();
+  if (/^PAPER-[A-Z0-9_-]{1,20}$/.test(accountId)) {
+    const [[paper], [version]] = await Promise.all([
+      db.select().from(paperAccounts).where(and(eq(paperAccounts.ownerEmail, user.email), eq(paperAccounts.accountId, accountId))).limit(1),
+      db.select().from(spotWhitelistVersions).where(and(eq(spotWhitelistVersions.ownerEmail, user.email), eq(spotWhitelistVersions.id, whitelistVersionId))).limit(1),
+    ]);
+    if (!paper) return Response.json({ error: "PAPER 虚拟账户不存在" }, { status: 404 });
+    if (paper.status !== "ACTIVE") return Response.json({ error: "PAPER 虚拟账户当前不可用" }, { status: 409 });
+    if (!version || version.status !== "PUBLISHED") return Response.json({ error: "只能使用已发布的白名单版本" }, { status: 409 });
+    const active = await db.select({ id: challengeInstances.id }).from(challengeInstances).where(and(eq(challengeInstances.ownerEmail, user.email), eq(challengeInstances.accountId, accountId), inArray(challengeInstances.status, ["DRAFT", "RUNNING", "CAUTION", "PROTECT", "REDUCE_ONLY", "CLEARING", "SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR"]))).limit(1);
+    if (active.length) return Response.json({ error: "该 PAPER 账户已有未结束的挑战实例" }, { status: 409 });
+    const now = new Date();
+    const config = { ...challengeRiskConfig(), thresholds: challengeThresholds(capitalUsdt) };
+    const [challenge] = await db.insert(challengeInstances).values({ ownerEmail: user.email, accountId, credentialId: 0, whitelistVersionId, capitalUsdt, feeRateBps: SPOT_CHALLENGE_DEFAULTS.feeRateBps, status: "DRAFT", riskConfigJson: JSON.stringify(config), modelVersion: `${SPOT_CHALLENGE_DEFAULTS.modelVersion}-paper`, createdAt: now, updatedAt: now }).returning();
+    return Response.json({ challenge, environment: "PAPER", thresholds: config.thresholds }, { status: 201 });
+  }
   const [[account], [credential], [version]] = await Promise.all([
     db.select().from(tradingAccounts).where(and(eq(tradingAccounts.ownerEmail, user.email), eq(tradingAccounts.accountId, accountId))).limit(1),
     db.select().from(exchangeCredentials).where(and(eq(exchangeCredentials.ownerEmail, user.email), eq(exchangeCredentials.id, credentialId), eq(exchangeCredentials.accountId, accountId))).limit(1),

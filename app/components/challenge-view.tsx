@@ -33,7 +33,7 @@ type SpotAccount = {
   lastVerifiedAt: string | null;
 };
 
-export function ChallengeView({ setToast, executionEnvironment = "LIVE" }: { setToast: (message: string) => void; executionEnvironment?: "LIVE" | "PAPER" }) {
+export function ChallengeView({ setToast, executionEnvironment = "LIVE", setExecutionEnvironment }: { setToast: (message: string) => void; executionEnvironment?: "LIVE" | "PAPER"; setExecutionEnvironment?: (environment: "LIVE" | "PAPER") => void }) {
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [versions, setVersions] = useState<WhitelistVersion[]>([]);
   const [capitals, setCapitals] = useState<number[]>([]);
@@ -192,7 +192,7 @@ export function ChallengeView({ setToast, executionEnvironment = "LIVE" }: { set
             <h2>{executionEnvironment === "PAPER" ? "PAPER 现货挑战赛" : "现货挑战赛"}</h2>
             <p>{executionEnvironment === "PAPER" ? "使用虚拟本金和独立账本验证白名单、风险阈值与挑战状态，不读取现货密钥。" : "固定本金、锁定白名单、组合风险自动计算。下单不需要人工审批，风险引擎通过后直接执行。"}</p>
           </div>
-          <div className="panel-actions"><button className="ghost-btn" onClick={() => setWhitelistPage(true)}>管理现货白名单</button><span className="guard">v1 · 手续费 0.04%/边</span></div>
+          <div className="panel-actions"><label className="environment-switcher"><span>执行环境</span><select aria-label="挑战赛执行环境" value={executionEnvironment} onChange={(event) => setExecutionEnvironment?.(event.target.value === "PAPER" ? "PAPER" : "LIVE")}><option value="LIVE">LIVE 实盘</option><option value="PAPER">PAPER 虚拟盘</option></select></label><button className="ghost-btn" onClick={() => setWhitelistPage(true)}>管理现货白名单</button><span className="guard">v1 · 手续费 0.04%/边</span></div>
         </div>
         <div className="config-grid">
           <label>{executionEnvironment === "PAPER" ? "PAPER 虚拟账户" : "已校验现货账号"}<select value={accountId} onChange={(event) => { if (executionEnvironment === "PAPER") { setAccountId(event.target.value); setCredentialId("0"); return; } const selected = spotAccounts.find((account) => account.accountId === event.target.value); setAccountId(selected?.accountId || ""); setCredentialId(selected ? String(selected.credentialId) : ""); }}><option value="">请选择{executionEnvironment === "PAPER" ? "虚拟账户" : "已校验账号"}</option>{executionEnvironment === "PAPER" ? paperAccounts.map((account) => <option value={account.accountId} key={account.accountId}>{account.accountId} · {account.name}</option>) : spotAccounts.map((account) => <option value={account.accountId} key={account.accountId}>{account.accountId} · {account.name} · {account.label}</option>)}</select>{executionEnvironment === "LIVE" && accountId && <small>密钥 {spotAccounts.find((account) => account.accountId === accountId)?.apiKeyMask || ""} · 已校验</small>}</label>

@@ -346,6 +346,7 @@ export function ManualOrderBoard({
   pool,
   setToast,
   executionEnvironment = "LIVE",
+  setExecutionEnvironment,
 }: {
   tradingAccounts: TradingAccount[];
   exchangeCredentials: ExchangeCredential[];
@@ -354,6 +355,7 @@ export function ManualOrderBoard({
   pool: ContractPoolItem[];
   setToast: (value: string) => void;
   executionEnvironment?: "LIVE" | "PAPER";
+  setExecutionEnvironment?: (environment: "LIVE" | "PAPER") => void;
 }) {
   const [windowCount, setWindowCount] = useState<4 | 5 | 6>(6);
   const [columns, setColumns] = useState<2 | 3>(3);
@@ -690,6 +692,12 @@ export function ManualOrderBoard({
         </div>
         <div className="manual-board-topbar-right">
           <span className="manual-board-live-dot"><i /> Binance 实时行情 · {executionEnvironment}</span>
+          <label>执行环境
+            <select aria-label="人工下单执行环境" value={executionEnvironment} onChange={(event) => setExecutionEnvironment?.(event.target.value === "PAPER" ? "PAPER" : "LIVE")}>
+              <option value="LIVE">LIVE 实盘</option>
+              <option value="PAPER">PAPER 虚拟盘</option>
+            </select>
+          </label>
           <label>{executionEnvironment === "PAPER" ? "虚拟账户" : "交易子账户"}
             <select value={executionEnvironment === "PAPER" ? paperAccountId : selectedAccountId} onChange={(event) => executionEnvironment === "PAPER" ? setPaperAccountId(event.target.value) : setSelectedAccountId(event.target.value)}>
               {executionEnvironment === "PAPER" && <option value="">请选择 PAPER 账户</option>}
