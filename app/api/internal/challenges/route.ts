@@ -5,6 +5,7 @@ import { challengeInstances, challengeOrders, challengeRiskSnapshots, exchangeCr
 import { decryptCredential, credentialContext } from "../../../../lib/credential-vault";
 import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotOpenOrders, getBinanceSpotTickerPrice } from "../../../../lib/binance-spot-live";
 import { evaluateSpotChallengeRisk } from "../../../../lib/spot-challenge-risk";
+import { readSpotAvailableUsdt } from "../../../../lib/spot-account-capital";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,8 @@ export async function POST(request: Request) {
       if (!credential || credential.exchange !== "BINANCE_SPOT") throw new Error("挑战凭据不是 Binance Spot");
       const keys = await keysFor(credential, challenge.ownerEmail, challenge.accountId);
       const account = await getBinanceSpotAccount(keys);
+      const capital = readSpotAvailableUsdt(account);
+      if (!capital.isSpot) throw new Error("挑战凭据返回的账户不是 Spot 账户");
       const now = new Date();
       const expiredOrders = await db.select().from(challengeOrders).where(and(
         eq(challengeOrders.challengeId, challenge.id),

@@ -11,6 +11,7 @@ import {
 import { isResponse, requirePermission } from "../shared";
 import { decryptCredential, credentialContext } from "../../../../lib/credential-vault";
 import { getBinanceSpotAccount } from "../../../../lib/binance-spot-live";
+import { readSpotAvailableUsdt } from "../../../../lib/spot-account-capital";
 import {
   SPOT_CHALLENGE_CAPITALS,
   SPOT_CHALLENGE_DEFAULTS,
@@ -143,9 +144,9 @@ export async function PATCH(request: Request) {
         apiKey: await decryptCredential(credential.apiKeyCiphertext, credential.apiKeyIv, credentialContext(user.email, challenge.accountId, "api-key")),
         secretKey: await decryptCredential(credential.secretKeyCiphertext, credential.secretKeyIv, credentialContext(user.email, challenge.accountId, "secret-key")),
       });
-      const usdt = account.balances?.find((balance) => balance.asset === "USDT");
-      const available = Number(usdt?.free || 0) + Number(usdt?.locked || 0);
-      if (account.accountType !== "SPOT" || !Number.isFinite(available) || available < challenge.capitalUsdt) return Response.json({ error: "现货账户可用本金不足，或账户类型不是 SPOT" }, { status: 409 });
+      const capital = readSpotAvailableUsdt(account);
+      if (!capital.isSpot) return Response.json({ error: "绑定的 Binance 账户不是 Spot 账户" }, { status: 409 });
+      if (capital.availableUsdt < challenge.capitalUsdt) return Response.json({ error: `现货账户可用 USDT 不足：需要 ${challenge.capitalUsdt.toFixed(2)}，当前 ${capital.availableUsdt.toFixed(2)}` }, { status: 409 });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "现货账户校验失败" }, { status: 502 });
     }
