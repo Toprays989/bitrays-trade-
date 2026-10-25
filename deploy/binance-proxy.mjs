@@ -149,6 +149,7 @@ const orderFlowSubscriptions = new Set();
 const spotKlineSubscriptions = new Set();
 const spotKlineCache = new Map();
 const spotTickerCache = new Map();
+const spotTickerSubscriptions = new Set();
 let spotKlineSocket = null;
 let spotKlineConnectedAt = 0;
 let spotKlineLastMessageAt = 0;
@@ -861,6 +862,15 @@ function parseSpotKlineMessage(event) {
       spotKlineLastMessageAt = receivedAt;
       return;
     }
+    if (message?.data?.e === "24hrTicker") {
+      const row = message.data;
+      const symbol = String(row.s || "").toUpperCase();
+      const values = [row.c, row.h, row.l, row.P, row.q].map(Number);
+      if (/^[A-Z0-9]{2,24}$/.test(symbol) && values.every(Number.isFinite)) {
+        spotTickerCache.set(symbol, { symbol, lastPrice: values[0], highPrice: values[1], lowPrice: values[2], priceChangePercent: values[3], quoteVolume: values[4], receivedAt: Date.now() });
+      }
+      return;
+    }
     const kline = message?.data?.k;
     if (message?.data?.e !== "kline" || !kline) return;
     const symbol = String(kline.s || "").toUpperCase();
@@ -903,9 +913,15 @@ function syncSpotKlineSubscriptions() {
   // !ticker@arr is fixed in the combined-stream URL. Binance does not
   // reliably emit it when added later through SUBSCRIBE on this socket.
   sendSpotKlineSubscription("SUBSCRIBE", additions);
+  const tickerAdditions = [...spotTickerSubscriptions].filter((symbol) => !spotKlineSocket.subscribed?.has(`ticker:${symbol}`));
+  if (tickerAdditions.length && spotKlineSocket.readyState === WebSocket.OPEN) {
+    spotKlineRequestSequence += 1;
+    spotKlineSocket.send(JSON.stringify({ method: "SUBSCRIBE", params: tickerAdditions.map((symbol) => `${symbol.toLowerCase()}@ticker`), id: `nq-spot-ticker-${spotKlineRequestSequence}` }));
+  }
   if (!spotKlineSocket.subscribed) spotKlineSocket.subscribed = new Set();
   spotKlineSocket.subscribed.add("!ticker@arr");
   for (const key of desired) spotKlineSocket.subscribed.add(key);
+  for (const symbol of tickerAdditions) spotKlineSocket.subscribed.add(`ticker:${symbol}`);
 }
 
 function scheduleSpotKlineReconnect() {
@@ -987,7 +1003,11 @@ async function handleSpotKlines(incoming, response) {
 function handleSpotTicker(incoming, response) {
   const symbol = String(incoming.searchParams.get("symbol") || "").trim().toUpperCase();
   const ticker = spotTickerCache.get(symbol);
-  if (!/^[A-Z0-9]{2,24}$/.test(symbol) || !ticker)
+  if (!/^[A-Z0-9]{2,24}$/.test(symbol))
+    return json(response, 400, { error: "现货交易对无效" });
+  spotTickerSubscriptions.add(symbol);
+  syncSpotKlineSubscriptions();
+  if (!ticker)
     return json(response, 503, { error: "现货 WebSocket 行情尚未就绪", source: "SPOT_WEBSOCKET" }, { "retry-after": "2" });
   if (Date.now() - ticker.receivedAt > 15_000)
     return json(response, 503, { error: "现货 WebSocket 行情已过期", source: "SPOT_WEBSOCKET" }, { "retry-after": "2" });
