@@ -148,6 +148,7 @@ const orderFlowWatch = new Map();
 const orderFlowSubscriptions = new Set();
 const spotKlineSubscriptions = new Set();
 const spotKlineCache = new Map();
+const spotTickerCache = new Map();
 let spotKlineSocket = null;
 let spotKlineConnectedAt = 0;
 let spotKlineLastMessageAt = 0;
@@ -849,6 +850,17 @@ function spotKlineKey(symbol, interval) {
 function parseSpotKlineMessage(event) {
   try {
     const message = JSON.parse(typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8"));
+    if (message?.stream === "!ticker@arr" && Array.isArray(message.data)) {
+      const receivedAt = Date.now();
+      for (const row of message.data) {
+        const symbol = String(row?.s || "").toUpperCase();
+        const values = [row?.c, row?.h, row?.l, row?.P, row?.q].map(Number);
+        if (!/^[A-Z0-9]{2,24}$/.test(symbol) || values.some((value) => !Number.isFinite(value))) continue;
+        spotTickerCache.set(symbol, { symbol, lastPrice: values[0], highPrice: values[1], lowPrice: values[2], priceChangePercent: values[3], quoteVolume: values[4], receivedAt });
+      }
+      spotKlineLastMessageAt = receivedAt;
+      return;
+    }
     const kline = message?.data?.k;
     if (message?.data?.e !== "kline" || !kline) return;
     const symbol = String(kline.s || "").toUpperCase();
@@ -887,8 +899,13 @@ function sendSpotKlineSubscription(method, keys) {
 function syncSpotKlineSubscriptions() {
   const desired = [...spotKlineSubscriptions];
   if (spotKlineSocket?.readyState !== WebSocket.OPEN) return;
-  sendSpotKlineSubscription("SUBSCRIBE", desired.filter((key) => !spotKlineSocket.subscribed?.has(key)));
+  const additions = desired.filter((key) => !spotKlineSocket.subscribed?.has(key));
+  if (!spotKlineSocket.subscribed?.has("!ticker@arr")) {
+    spotKlineSocket.send(JSON.stringify({ method: "SUBSCRIBE", params: ["!ticker@arr"], id: "nq-spot-ticker" }));
+  }
+  sendSpotKlineSubscription("SUBSCRIBE", additions);
   if (!spotKlineSocket.subscribed) spotKlineSocket.subscribed = new Set();
+  spotKlineSocket.subscribed.add("!ticker@arr");
   for (const key of desired) spotKlineSocket.subscribed.add(key);
 }
 
@@ -966,6 +983,17 @@ async function handleSpotKlines(incoming, response) {
     } catch { /* keep the REST payload as the response */ }
   }
   send(response, payload);
+}
+
+function handleSpotTicker(incoming, response) {
+  const symbol = String(incoming.searchParams.get("symbol") || "").trim().toUpperCase();
+  const ticker = spotTickerCache.get(symbol);
+  if (!/^[A-Z0-9]{2,24}$/.test(symbol) || !ticker)
+    return json(response, 503, { error: "现货 WebSocket 行情尚未就绪", source: "SPOT_WEBSOCKET" }, { "retry-after": "2" });
+  if (Date.now() - ticker.receivedAt > 15_000)
+    return json(response, 503, { error: "现货 WebSocket 行情已过期", source: "SPOT_WEBSOCKET" }, { "retry-after": "2" });
+  recordStat("GET", "/market/spot-ticker", "websocketServed");
+  return json(response, 200, ticker, { "x-nq-kline-source": "spot-websocket" });
 }
 
 function activeBookSymbols(now = Date.now()) {
@@ -1742,6 +1770,12 @@ function metricsPayload() {
       intervals: ["3d", "1w"],
       source: "Binance Spot WebSocket with REST bootstrap fallback",
     },
+    spotTickerWebsocket: {
+      connected: spotKlineSocket?.readyState === WebSocket.OPEN,
+      symbols: spotTickerCache.size,
+      ageMs: spotKlineLastMessageAt ? now - spotKlineLastMessageAt : null,
+      source: "Binance Spot !ticker@arr WebSocket",
+    },
     bookEye: {
       connected: bookSocket?.readyState === WebSocket.OPEN,
       connectedAt: bookConnectedAt
@@ -1854,6 +1888,7 @@ async function forward(request, response) {
       return await handleGlobalLiquidations(response);
     if (incoming.pathname === "/market/ticker") return handleTicker(incoming, response);
     if (incoming.pathname === "/market/spot-klines") return await handleSpotKlines(incoming, response);
+    if (incoming.pathname === "/market/spot-ticker") return handleSpotTicker(incoming, response);
     if (incoming.pathname === "/market/book-tickers") return handleBookTickers(incoming, response);
     if (incoming.pathname === "/market/order-flow") return handleOrderFlow(incoming, response);
     if (incoming.pathname === "/private/order-events")

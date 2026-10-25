@@ -99,9 +99,12 @@ export async function getBinanceSpotAccount(credentials: SpotCredentials) {
 export async function getBinanceSpotTickerPrice(symbol: string) {
   const normalized = symbol.toUpperCase();
   return cachedPublic(`price:${normalized}`, 1_000, async () => {
-    const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/price?symbol=${encodeURIComponent(normalized)}`);
-    const payload = await json<{ symbol?: string; price?: string }>(response);
-    const price = Number(payload.price);
+    const proxy = spotProxyUrl();
+    const response = await fetchWithTimeout(proxy
+      ? `${proxy}/market/spot-ticker?symbol=${encodeURIComponent(normalized)}`
+      : `${spotBaseUrl()}/api/v3/ticker/price?symbol=${encodeURIComponent(normalized)}`);
+    const payload = await json<{ symbol?: string; price?: string; lastPrice?: number }>(response);
+    const price = Number(payload.price ?? payload.lastPrice);
     if (!response.ok || !Number.isFinite(price) || price <= 0) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 现货价格`, response.status || 502);
     return price;
   });
@@ -110,7 +113,10 @@ export async function getBinanceSpotTickerPrice(symbol: string) {
 export async function getBinanceSpotTicker24h(symbol: string) {
   const normalized = symbol.toUpperCase();
   return cachedPublic(`ticker24h:${normalized}`, 5_000, async () => {
-    const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(normalized)}`);
+    const proxy = spotProxyUrl();
+    const response = await fetchWithTimeout(proxy
+      ? `${proxy}/market/spot-ticker?symbol=${encodeURIComponent(normalized)}`
+      : `${spotBaseUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(normalized)}`);
     const payload = await json<{ symbol?: string; lastPrice?: string; highPrice?: string; lowPrice?: string; priceChangePercent?: string; quoteVolume?: string }>(response);
     if (!response.ok) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 24小时行情`, response.status || 502);
     return {
