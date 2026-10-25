@@ -496,6 +496,8 @@ function reserveWeight(method, pathname, searchParams, criticalOverride = false)
       reason: reservation.reason,
       globalUsed: reservation.globalUsed,
       globalLimit: reservation.globalLimit,
+      projectUsed: reservation.projectUsed,
+      projectLimit: reservation.projectLimit,
     };
   }
   const weightEvent = {
@@ -712,8 +714,8 @@ async function fetchPayload(environment, path, method, headers, pathname, search
         msg: reservation.reason === "GLOBAL_IP_WEIGHT_LIMIT"
           ? `系统已达到 Binance/IP 每分钟 ${reservation.globalLimit} 权重保护线`
           : reservation.reason === "PROJECT_WEIGHT_RESERVE"
-            ? `Nexus 每分钟权重已达到 ${reservation.projectLimit} 保护线，正在保留下单、撤单与仓位对账容量`
-          : `系统已达到 Binance ${reservation.bucket === "OBSERVATION" ? "观测" : "交易"} 每分钟 ${reservation.limit} 权重保护线`,
+            ? `Nexus 每分钟权重已达到 ${reservation.projectLimit ?? reservation.limit ?? PROJECT_TRADING_ADMISSION_LIMIT} 保护线，正在保留下单、撤单与仓位对账容量`
+          : `系统已达到 Binance ${reservation.bucket === "OBSERVATION" ? "观测" : "交易"} 每分钟 ${reservation.limit ?? (reservation.bucket === "OBSERVATION" ? OBSERVATION_WEIGHT_LIMIT : TRADING_ADMISSION_LIMIT)} 权重保护线`,
         retryAfterSeconds: 60,
         localRateLimit: true,
         usedWeight: reservation.used,
@@ -721,7 +723,7 @@ async function fetchPayload(environment, path, method, headers, pathname, search
         globalUsedWeight: reservation.globalUsed,
         globalWeightLimit: reservation.globalLimit,
         projectUsedWeight: reservation.projectUsed,
-        projectWeightLimit: reservation.projectLimit,
+        projectWeightLimit: reservation.projectLimit ?? reservation.limit,
       })),
     };
   }
