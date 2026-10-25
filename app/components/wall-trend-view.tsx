@@ -34,6 +34,7 @@ type WallRow = {
 };
 
 type PhaseTwoSummary = { ready: number; waiting: number; invalidated: number; brainReady: number; eyeReady: number };
+const WALL_TREND_SCAN_ENABLED = false;
 
 export type WallTrendHandoff = {
   symbol: string;
@@ -57,7 +58,7 @@ function price(value: number | undefined) {
 export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIVE", setExecutionEnvironment }: { setToast: (message: string) => void; onHandoff?: (handoff: WallTrendHandoff) => void; executionEnvironment?: "LIVE" | "PAPER"; setExecutionEnvironment?: (environment: "LIVE" | "PAPER") => void }) {
   const [rows, setRows] = useState<WallRow[]>([]);
   const [ready, setReady] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(WALL_TREND_SCAN_ENABLED);
   const [query, setQuery] = useState("");
   const [summary, setSummary] = useState<PhaseTwoSummary>({ ready: 0, waiting: 0, invalidated: 0, brainReady: 0, eyeReady: 0 });
   const [paperAccounts, setPaperAccounts] = useState<Array<{ accountId: string; name: string }>>([]);
@@ -80,6 +81,9 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
   }, [setToast]);
 
   useEffect(() => {
+    if (!WALL_TREND_SCAN_ENABLED) {
+      return;
+    }
     const initial = window.setTimeout(() => void load(), 0);
     const timer = window.setInterval(() => void load(), 5_000);
     return () => {
@@ -126,6 +130,7 @@ export function WallTrendView({ setToast, onHandoff, executionEnvironment = "LIV
         <div className="panel-head">
           <div>
             <h2>买卖墙趋势</h2>
+            {!WALL_TREND_SCAN_ENABLED ? <p className="warning-text">买卖墙扫描已临时停用，以释放 Binance 行情权重；挑战赛、风控和人工下单不受影响。</p> : null}
             <p>独立业务监控层，复用公共行情订单流；当前只读，不触发下单。转交半自动后沿用当前环境，PAPER 订单与实盘账本隔离。</p>
           </div>
           <div className="panel-actions">

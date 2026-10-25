@@ -9,6 +9,9 @@ import { isResponse, requirePermission } from "../shared";
 export const dynamic = "force-dynamic";
 
 const MAX_WATCH_SYMBOLS = 20;
+// Temporarily disabled to release Binance order-flow subscriptions and weight.
+// Re-enable only after the account/rate-limit incident is closed.
+const WALL_TREND_SCAN_ENABLED = false;
 
 function finite(value: unknown, fallback = 0) {
   const number = Number(value);
@@ -92,6 +95,25 @@ function evaluatePhaseTwo(row: Awaited<ReturnType<typeof getNexusLiveOrderFlow>>
 export async function GET(request: Request) {
   const user = await requirePermission(request, "trade:dashboard:view");
   if (isResponse(user)) return user;
+
+  if (!WALL_TREND_SCAN_ENABLED) {
+    return Response.json({
+      business: "WALL_TREND",
+      businessLabel: "买卖墙趋势",
+      phase: 2,
+      decisionVersion: "wall-trend-brain-eye-v1",
+      readOnly: true,
+      disabled: true,
+      disabledReason: "买卖墙扫描已临时停用，以释放 Binance 行情权重",
+      watchedLimit: 0,
+      watchedSymbols: [],
+      ready: false,
+      missing: [],
+      summary: { ready: 0, waiting: 0, invalidated: 0, brainReady: 0, eyeReady: 0 },
+      updatedAt: new Date().toISOString(),
+      rows: [],
+    });
+  }
 
   const db = getDb();
   const universe = await db

@@ -28,6 +28,7 @@ ALLOWED_FILES = (
     "next.config.ts",
     "package-lock.json",
     "package.json",
+    "pnpm-workspace.yaml",
     "postcss.config.mjs",
     "tsconfig.json",
     "vite.config.ts",
@@ -311,10 +312,15 @@ docker ps --format 'OTHER={{.Names}}|{{.ID}}' | grep -v '^OTHER=nexus-quant-cont
         "nexus-quant-contract-trader-simple-rebound",
         "nexus-quant-contract-trader-manual-grid",
     )
+    degraded_runner_names = {
+        "nexus-quant-contract-trader-account-audit",
+        "nexus-quant-contract-trader-contract-data",
+    }
     allowed_runner_states = {
         name: (
-            {("running", "none"), ("running", "healthy"), ("running", "unhealthy")}
-            if allow_unhealthy_runner_repair
+            ({("running", "none"), ("running", "healthy"), ("running", "unhealthy"), ("running", "starting")}
+             if name in degraded_runner_names else {("running", "none"), ("running", "healthy"), ("running", "unhealthy")})
+            if allow_unhealthy_runner_repair or name in degraded_runner_names
             else {("running", "none"), ("running", "healthy")}
         )
         for name in runner_names

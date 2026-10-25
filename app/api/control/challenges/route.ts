@@ -49,8 +49,27 @@ export async function GET(request: Request) {
   const symbols = versionIds.length
     ? await db.select().from(spotWhitelistSymbols).where(inArray(spotWhitelistSymbols.versionId, versionIds))
     : [];
+  const challengeIds = challenges.map((challenge) => challenge.id);
+  const snapshots = challengeIds.length
+    ? await db.select().from(challengeRiskSnapshots).where(inArray(challengeRiskSnapshots.challengeId, challengeIds)).orderBy(desc(challengeRiskSnapshots.createdAt))
+    : [];
+  const latestSnapshot = new Map<number, typeof snapshots[number]>();
+  for (const snapshot of snapshots) if (!latestSnapshot.has(snapshot.challengeId)) latestSnapshot.set(snapshot.challengeId, snapshot);
+  const enrichedChallenges = challenges.map((challenge) => {
+    const snapshot = latestSnapshot.get(challenge.id);
+    let strategyDiagnostics: unknown[] = [];
+    if (snapshot?.metricsJson) {
+      try {
+        const metrics = JSON.parse(snapshot.metricsJson) as { strategyDiagnostics?: unknown };
+        if (Array.isArray(metrics.strategyDiagnostics)) strategyDiagnostics = metrics.strategyDiagnostics;
+      } catch {
+        strategyDiagnostics = [];
+      }
+    }
+    return { ...challenge, strategyDiagnostics, lastRiskSnapshotAt: snapshot?.createdAt ?? null };
+  });
   return Response.json({
-    challenges,
+    challenges: enrichedChallenges,
     whitelistVersions: versions.map((version) => ({
       ...version,
       symbols: symbols.filter((symbol) => symbol.versionId === version.id),

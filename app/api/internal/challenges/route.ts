@@ -3,7 +3,7 @@ import { and, eq, inArray, lte } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { challengeInstances, challengeOrders, challengeRiskSnapshots, exchangeCredentials, paperAccounts, spotWhitelistSymbols } from "../../../../db/schema";
 import { decryptCredential, credentialContext } from "../../../../lib/credential-vault";
-import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotKlines, getBinanceSpotOpenOrders, getBinanceSpotTicker24h, getBinanceSpotTickerPrice } from "../../../../lib/binance-spot-live";
+import { cancelBinanceSpotOrder, getBinanceSpotAccount, getBinanceSpotKlines, getBinanceSpotTicker24h, getBinanceSpotTickerPrice } from "../../../../lib/binance-spot-live";
 import { evaluateSpotChallengeRisk } from "../../../../lib/spot-challenge-risk";
 import { readSpotAvailableUsdt } from "../../../../lib/spot-account-capital";
 import { planSpotChallengeLongEntry } from "../../../../lib/spot-challenge-strategy";
@@ -64,14 +64,18 @@ export async function POST(request: Request) {
         if (["RUNNING", "CAUTION"].includes(status)) {
           const btc = await getBinanceSpotTicker24h("BTCUSDT").catch(() => null);
           const whitelist = await db.select().from(spotWhitelistSymbols).where(and(eq(spotWhitelistSymbols.versionId, challenge.whitelistVersionId), eq(spotWhitelistSymbols.eligible, true), eq(spotWhitelistSymbols.operatorSelected, true)));
-          for (const row of whitelist.slice(0, 20)) {
+          const scanLimit = 5;
+          const scanOffset = Math.floor(Date.now() / 5_000) % Math.max(1, whitelist.length);
+          const scanRows = Array.from({ length: Math.min(scanLimit, whitelist.length) }, (_, index) => whitelist[(scanOffset + index) % whitelist.length]);
+          for (const row of scanRows) {
             const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
             if (existing.length) continue;
             const ticker = await getBinanceSpotTicker24h(row.symbol).catch(() => null);
             if (!ticker) continue;
+            const threeDay = await getBinanceSpotKlines(row.symbol, "3d", 1).catch(() => []);
             const weekly = await getBinanceSpotKlines(row.symbol, "1w", 52).catch(() => []);
             if (!weekly.length) continue;
-            const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: 0, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0 });
+            const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: 0, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, threeDayHigh: threeDay[0]?.high, threeDayLow: threeDay[0]?.low, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0, maxEntryPrice: 20 });
             if (signal.action !== "BUY") continue;
             const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${row.symbol}` });
             automaticOrders.push({ symbol: row.symbol, signal, result });
@@ -146,26 +150,50 @@ export async function POST(request: Request) {
       const pendingOrders = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED"]))).then((orders) => orders.filter((order) => allowedSymbols.has(order.symbol)).map((order) => ({ symbol: order.symbol, reservedNotionalUsdt: Number(order.reservedNotionalUsdt || 0), pressureLossPercent: 10, correlationGroup: order.symbol.startsWith("BTC") || order.symbol.startsWith("ETH") ? "majors" : order.symbol.replace(/USDT$/, "") })));
       const risk = evaluateSpotChallengeRisk({ capitalUsdt: challenge.capitalUsdt, equityUsdt, positions, pendingOrders, websocketAgeMs: 0 });
       const status = challenge.status === "REDUCE_ONLY" && !["SUCCESS_PENDING_CLEAR", "FAILURE_PENDING_CLEAR"].includes(risk.status) ? "REDUCE_ONLY" : risk.status;
-      await db.insert(challengeRiskSnapshots).values({ challengeId: challenge.id, equityUsdt, netPnlUsdt: risk.netPnlUsdt, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, pressureLossUsdt: risk.pressureLossUsdt, var95Usdt: risk.pressureLossUsdt, riskState: status, metricsJson: JSON.stringify({ positions, pendingOrders, reasons: risk.reasons }), createdAt: now });
+      const strategyDiagnostics: Array<Record<string, unknown>> = [];
       await db.update(challengeInstances).set({ status, equityUsdt, netPnlUsdt: risk.netPnlUsdt, riskUsedPercent: risk.riskUsedPercent, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, updatedAt: now }).where(eq(challengeInstances.id, challenge.id));
       const automaticOrders: Array<Record<string, unknown>> = [];
+      const buyCandidates: Array<{ symbol: string; quoteOrderUsdt: number; signal: ReturnType<typeof planSpotChallengeLongEntry> }> = [];
       if (["RUNNING", "CAUTION"].includes(status)) {
         const btc = await getBinanceSpotTicker24h("BTCUSDT").catch(() => null);
-        for (const row of whitelist.slice(0, 20)) {
+        const scanLimit = 5;
+        const scanOffset = Math.floor(Date.now() / 5_000) % Math.max(1, whitelist.length);
+        const scanRows = Array.from({ length: Math.min(scanLimit, whitelist.length) }, (_, index) => whitelist[(scanOffset + index) % whitelist.length]);
+        for (const row of scanRows) {
           const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
-          if (existing.length) continue;
+          if (existing.length) {
+            strategyDiagnostics.push({ symbol: row.symbol, action: "HOLD", reason: "已有挑战订单，等待成交或退出" });
+            continue;
+          }
           const ticker = await getBinanceSpotTicker24h(row.symbol).catch(() => null);
-          if (!ticker) continue;
+          if (!ticker) {
+            strategyDiagnostics.push({ symbol: row.symbol, action: "HOLD", reason: "无法取得24小时行情" });
+            continue;
+          }
+          const threeDay = await getBinanceSpotKlines(row.symbol, "3d", 1).catch(() => []);
           const weekly = await getBinanceSpotKlines(row.symbol, "1w", 52).catch(() => []);
-          if (!weekly.length) continue;
-          const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: risk.riskUsedPercent, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0 });
+          if (!weekly.length) {
+            strategyDiagnostics.push({ symbol: row.symbol, action: "HOLD", reason: "无法取得52周行情" });
+            continue;
+          }
+          const weekHigh = Math.max(...weekly.map((item) => item.high));
+          const weekLow = Math.min(...weekly.map((item) => item.low));
+          const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: risk.riskUsedPercent, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, threeDayHigh: threeDay[0]?.high, threeDayLow: threeDay[0]?.low, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0, maxEntryPrice: 20 });
+          const threeDayHigh = threeDay[0]?.high ?? ticker.highPrice;
+          const threeDayLow = threeDay[0]?.low ?? ticker.lowPrice;
+          strategyDiagnostics.push({ symbol: row.symbol, action: signal.action, reason: signal.reason, price: ticker.lastPrice, dayPositionPercent: threeDayHigh > threeDayLow ? ((ticker.lastPrice - threeDayLow) / (threeDayHigh - threeDayLow)) * 100 : 50, weekPositionPercent: weekHigh > weekLow ? ((ticker.lastPrice - weekLow) / (weekHigh - weekLow)) * 100 : 50, btcChangePercent: btc?.priceChangePercent ?? 0 });
           if (signal.action !== "BUY") continue;
-          const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${row.symbol}` });
-          automaticOrders.push({ symbol: row.symbol, signal, result });
-          if (automaticOrders.length >= 2) break;
+          buyCandidates.push({ symbol: row.symbol, quoteOrderUsdt: signal.quoteOrderUsdt, signal });
+        }
+        // Randomize only among candidates that already passed every whitelist,
+        // position, BTC-correlation and risk gate. Never bypass a gate.
+        for (const candidate of buyCandidates.sort(() => Math.random() - 0.5).slice(0, 2)) {
+          const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: candidate.symbol, side: "BUY", quoteOrderQty: candidate.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${candidate.symbol}` });
+          automaticOrders.push({ symbol: candidate.symbol, signal: candidate.signal, result });
         }
       }
-      results.push({ challengeId: challenge.id, status, equityUsdt, riskUsedPercent: risk.riskUsedPercent, successProbability: risk.successProbability, failureProbability: risk.failureProbability, automaticOrders, automaticExits });
+      await db.insert(challengeRiskSnapshots).values({ challengeId: challenge.id, equityUsdt, netPnlUsdt: risk.netPnlUsdt, successProbability: risk.successProbability, failureProbability: risk.failureProbability, stressFailureProbability: risk.stressFailureProbability, pressureLossUsdt: risk.pressureLossUsdt, var95Usdt: risk.pressureLossUsdt, riskState: status, metricsJson: JSON.stringify({ positions, pendingOrders, reasons: risk.reasons, strategyDiagnostics }), createdAt: now });
+      results.push({ challengeId: challenge.id, status, equityUsdt, riskUsedPercent: risk.riskUsedPercent, successProbability: risk.successProbability, failureProbability: risk.failureProbability, automaticOrders, automaticExits, strategyDiagnostics });
     } catch (error) {
       results.push({ challengeId: challenge.id, status: "ERROR", error: error instanceof Error ? error.message : String(error) });
     }
