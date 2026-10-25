@@ -46,6 +46,7 @@ const TARGETS = {
 };
 const MARKET_STREAM_URL =
   "wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s/!ticker@arr/!forceOrder@arr";
+const SPOT_KLINE_STREAM_URL = "wss://stream.binance.com:9443/stream";
 const BOOK_STREAM_URL = "wss://fstream.binance.com/public/stream";
 const BOOK_WATCH_TTL_MS = 2 * 60_000;
 const BOOK_WATCH_LIMIT = 100;
@@ -145,6 +146,15 @@ const bookWatch = new Map();
 const bookSubscriptions = new Set();
 const orderFlowWatch = new Map();
 const orderFlowSubscriptions = new Set();
+const spotKlineSubscriptions = new Set();
+const spotKlineCache = new Map();
+let spotKlineSocket = null;
+let spotKlineConnectedAt = 0;
+let spotKlineLastMessageAt = 0;
+let spotKlineReconnectAttempt = 0;
+let spotKlineReconnectTimer = null;
+let spotKlineRequestSequence = 0;
+let spotKlineStaleRecoveryAt = 0;
 const liquidationBuckets = new Map();
 const liquidationFingerprints = new Map();
 const liquidationEvents = [];
@@ -422,6 +432,8 @@ function estimatedWeight(pathname, searchParams) {
     return klineWeight(Number(searchParams.get("limit") || 500));
   if (pathname === "/fapi/v1/markPriceKlines")
     return klineWeight(Number(searchParams.get("limit") || 500));
+  if (pathname === "/api/v3/klines")
+    return klineWeight(Number(searchParams.get("limit") || 500));
   if (pathname === "/fapi/v1/exchangeInfo" || pathname === "/fapi/v1/time") return 1;
   if (pathname === "/fapi/v1/listenKey") return 1;
   if (pathname === "/fapi/v3/account" || pathname === "/fapi/v3/positionRisk") return 5;
@@ -562,6 +574,8 @@ function klineCacheTtl(searchParams, now = Date.now()) {
     "30m": 30 * 60_000,
     "1h": 60 * 60_000,
     "4h": 4 * 60 * 60_000,
+    "3d": 3 * 24 * 60 * 60_000,
+    "1w": 7 * 24 * 60 * 60_000,
   }[searchParams.get("interval") || searchParams.get("period")];
   if (!intervalMs) return 0;
   const nextBoundary = (Math.floor(now / intervalMs) + 1) * intervalMs;
@@ -574,6 +588,8 @@ function cacheTtl(environment, pathname, searchParams) {
   if (pathname === "/fapi/v1/klines")
     return klineCacheTtl(searchParams);
   if (pathname === "/fapi/v1/markPriceKlines")
+    return klineCacheTtl(searchParams);
+  if (pathname === "/api/v3/klines")
     return klineCacheTtl(searchParams);
   if ([
     "/futures/data/openInterestHist",
@@ -824,6 +840,132 @@ function parseMarketMessage(event) {
     }
     marketLastMessageAt = receivedAt;
   } catch { /* malformed upstream frame is ignored; freshness guard remains active */ }
+}
+
+function spotKlineKey(symbol, interval) {
+  return `${symbol.toUpperCase()}:${interval}`;
+}
+
+function parseSpotKlineMessage(event) {
+  try {
+    const message = JSON.parse(typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8"));
+    const kline = message?.data?.k;
+    if (message?.data?.e !== "kline" || !kline) return;
+    const symbol = String(kline.s || "").toUpperCase();
+    const interval = String(kline.i || "");
+    const openTime = Number(kline.t);
+    if (!/^[A-Z0-9]{2,24}$/.test(symbol) || !["3d", "1w"].includes(interval) || !Number.isSafeInteger(openTime)) return;
+    const row = [
+      openTime, String(kline.o), String(kline.h), String(kline.l), String(kline.c),
+      String(kline.v), Number(kline.T), String(kline.q), Number(kline.n),
+      String(kline.V), String(kline.Q), Number(kline.B),
+    ];
+    const key = spotKlineKey(symbol, interval);
+    const current = spotKlineCache.get(key) || { rows: new Map(), lastMessageAt: 0, lastWsMessageAt: 0 };
+    current.rows.set(openTime, row);
+    while (current.rows.size > 120) current.rows.delete(current.rows.keys().next().value);
+    current.lastMessageAt = Date.now();
+    current.lastWsMessageAt = current.lastMessageAt;
+    spotKlineCache.set(key, current);
+    spotKlineLastMessageAt = current.lastMessageAt;
+  } catch { /* malformed public frame is ignored; freshness guard remains active */ }
+}
+
+function sendSpotKlineSubscription(method, keys) {
+  if (!keys.length || !spotKlineSocket || spotKlineSocket.readyState !== WebSocket.OPEN) return;
+  spotKlineRequestSequence += 1;
+  spotKlineSocket.send(JSON.stringify({
+    method,
+    params: keys.map((key) => {
+      const [symbol, interval] = key.split(":");
+      return `${symbol.toLowerCase()}@kline_${interval}`;
+    }),
+    id: `nq-spot-kline-${spotKlineRequestSequence}`,
+  }));
+}
+
+function syncSpotKlineSubscriptions() {
+  const desired = [...spotKlineSubscriptions];
+  if (spotKlineSocket?.readyState !== WebSocket.OPEN) return;
+  sendSpotKlineSubscription("SUBSCRIBE", desired.filter((key) => !spotKlineSocket.subscribed?.has(key)));
+  if (!spotKlineSocket.subscribed) spotKlineSocket.subscribed = new Set();
+  for (const key of desired) spotKlineSocket.subscribed.add(key);
+}
+
+function scheduleSpotKlineReconnect() {
+  if (spotKlineReconnectTimer) return;
+  const delay = Math.min(30_000, 1_000 * 2 ** Math.min(spotKlineReconnectAttempt, 5));
+  spotKlineReconnectAttempt += 1;
+  spotKlineReconnectTimer = setTimeout(() => {
+    spotKlineReconnectTimer = null;
+    connectSpotKlineStream();
+  }, delay);
+}
+
+function retireSpotKlineSocket(socket) {
+  if (spotKlineSocket !== socket) return;
+  spotKlineSocket = null;
+  scheduleSpotKlineReconnect();
+}
+
+function connectSpotKlineStream() {
+  if (spotKlineSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(spotKlineSocket.readyState)) return;
+  const socket = new WebSocket(SPOT_KLINE_STREAM_URL);
+  socket.subscribed = new Set();
+  spotKlineSocket = socket;
+  socket.addEventListener("open", () => {
+    if (spotKlineSocket !== socket) return;
+    spotKlineReconnectAttempt = 0;
+    spotKlineConnectedAt = Date.now();
+    syncSpotKlineSubscriptions();
+  });
+  socket.addEventListener("message", (event) => {
+    if (spotKlineSocket === socket) parseSpotKlineMessage(event);
+  });
+  socket.addEventListener("close", () => retireSpotKlineSocket(socket));
+  socket.addEventListener("error", () => retireSpotKlineSocket(socket));
+}
+
+function watchSpotKline(symbol, interval) {
+  const key = spotKlineKey(symbol, interval);
+  spotKlineSubscriptions.add(key);
+  syncSpotKlineSubscriptions();
+  return key;
+}
+
+function spotKlineRows(key, limit) {
+  const entry = spotKlineCache.get(key);
+  if (!entry) return null;
+  const rows = [...entry.rows.values()].sort((a, b) => Number(a[0]) - Number(b[0]));
+  return { rows: rows.slice(-limit), lastMessageAt: entry.lastMessageAt, lastWsMessageAt: entry.lastWsMessageAt || 0 };
+}
+
+async function handleSpotKlines(incoming, response) {
+  const symbol = String(incoming.searchParams.get("symbol") || "").trim().toUpperCase();
+  const interval = String(incoming.searchParams.get("interval") || "");
+  const limit = Math.max(2, Math.min(52, Math.trunc(Number(incoming.searchParams.get("limit") || 52))));
+  if (!/^[A-Z0-9]{2,24}$/.test(symbol) || !["3d", "1w"].includes(interval))
+    return json(response, 400, { error: "现货 K 线参数无效" });
+  const key = watchSpotKline(symbol, interval);
+  const cached = spotKlineRows(key, limit);
+  if (cached && cached.rows.length >= limit && cached.lastWsMessageAt > Date.now() - 10 * 60_000) {
+    recordStat("GET", "/market/spot-klines", "websocketServed");
+    return json(response, 200, cached.rows, { "x-nq-kline-source": "spot-websocket" });
+  }
+  const params = new URLSearchParams({ symbol, interval, limit: String(limit) });
+  const payload = await fetchPayload("spot", `/api/v3/klines?${params.toString()}`, "GET", { accept: "application/json" }, "/api/v3/klines", params);
+  if (payload.status >= 200 && payload.status < 300) {
+    try {
+      const rows = JSON.parse(payload.body.toString("utf8"));
+      if (Array.isArray(rows)) {
+        const entry = spotKlineCache.get(key) || { rows: new Map(), lastMessageAt: 0, lastWsMessageAt: 0 };
+        for (const row of rows) if (Array.isArray(row) && Number.isSafeInteger(Number(row[0]))) entry.rows.set(Number(row[0]), row);
+        entry.lastMessageAt = Date.now();
+        spotKlineCache.set(key, entry);
+      }
+    } catch { /* keep the REST payload as the response */ }
+  }
+  send(response, payload);
 }
 
 function activeBookSymbols(now = Date.now()) {
@@ -1143,6 +1285,17 @@ function monitorWebSocketFreshness(now = Date.now()) {
     const staleSocket = marketSocket;
     try { staleSocket.close(4000, "stale-market-stream"); } catch { /* reconnect below */ }
     retireMarketSocket(staleSocket);
+  }
+  if (
+    spotKlineSubscriptions.size > 0 &&
+    spotKlineSocket?.readyState === WebSocket.OPEN &&
+    spotKlineConnectedAt > 0 &&
+    now - Math.max(spotKlineLastMessageAt, spotKlineConnectedAt) > 15 * 60_000
+  ) {
+    spotKlineStaleRecoveryAt = now;
+    const staleSocket = spotKlineSocket;
+    try { staleSocket.close(4000, "stale-spot-kline-stream"); } catch { /* reconnect below */ }
+    retireSpotKlineSocket(staleSocket);
   }
   const watchedBooks = activeBookSymbols(now).length || activeOrderFlowSymbols(now).length;
   if (
@@ -1577,6 +1730,18 @@ function metricsPayload() {
         ? new Date(liquidationLastEventAt).toISOString()
         : null,
     },
+    spotKlineWebsocket: {
+      connected: spotKlineSocket?.readyState === WebSocket.OPEN,
+      connectedAt: spotKlineConnectedAt ? new Date(spotKlineConnectedAt).toISOString() : null,
+      lastMessageAt: spotKlineLastMessageAt ? new Date(spotKlineLastMessageAt).toISOString() : null,
+      ageMs: spotKlineLastMessageAt ? now - spotKlineLastMessageAt : null,
+      reconnectAttempt: spotKlineReconnectAttempt,
+      staleRecoveryAt: spotKlineStaleRecoveryAt ? new Date(spotKlineStaleRecoveryAt).toISOString() : null,
+      subscriptions: spotKlineSubscriptions.size,
+      cachedSeries: spotKlineCache.size,
+      intervals: ["3d", "1w"],
+      source: "Binance Spot WebSocket with REST bootstrap fallback",
+    },
     bookEye: {
       connected: bookSocket?.readyState === WebSocket.OPEN,
       connectedAt: bookConnectedAt
@@ -1688,6 +1853,7 @@ async function forward(request, response) {
     if (incoming.pathname === "/market/global-liquidations")
       return await handleGlobalLiquidations(response);
     if (incoming.pathname === "/market/ticker") return handleTicker(incoming, response);
+    if (incoming.pathname === "/market/spot-klines") return await handleSpotKlines(incoming, response);
     if (incoming.pathname === "/market/book-tickers") return handleBookTickers(incoming, response);
     if (incoming.pathname === "/market/order-flow") return handleOrderFlow(incoming, response);
     if (incoming.pathname === "/private/order-events")
@@ -1819,6 +1985,7 @@ async function forward(request, response) {
 
 connectMarketStream();
 connectBookStream();
+connectSpotKlineStream();
 setInterval(() => monitorWebSocketFreshness(), 1_000);
 ensureExchangeInfo().catch(() => {});
 setInterval(() => flushLiquidations(), 250).unref();

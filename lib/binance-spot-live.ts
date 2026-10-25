@@ -17,6 +17,10 @@ function spotBaseUrl() {
   return proxy ? `${proxy}/spot` : SPOT_DIRECT_BASE_URL;
 }
 
+function spotProxyUrl() {
+  return (env as unknown as { NQ_BINANCE_PROXY_URL?: string }).NQ_BINANCE_PROXY_URL?.replace(/\/$/, "");
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -93,7 +97,11 @@ export async function getBinanceSpotTicker24h(symbol: string) {
 }
 
 export async function getBinanceSpotKlines(symbol: string, interval: "3d" | "1w", limit = 52) {
-  const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${Math.max(2, Math.min(52, Math.trunc(limit)))}`);
+  const cappedLimit = Math.max(2, Math.min(52, Math.trunc(limit)));
+  const proxy = spotProxyUrl();
+  const response = await fetchWithTimeout(proxy
+    ? `${proxy}/market/spot-klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${cappedLimit}`
+    : `${spotBaseUrl()}/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${cappedLimit}`);
   const payload = await json<unknown>(response);
   if (!response.ok || !Array.isArray(payload)) throw new BinanceSpotError(`无法取得现货${interval}行情`, response.status || 502);
   return payload.map((row) => Array.isArray(row) ? { high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) } : null).filter((row): row is { high: number; low: number; close: number } => !!row && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));

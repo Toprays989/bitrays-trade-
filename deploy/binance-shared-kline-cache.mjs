@@ -1,6 +1,7 @@
 const SHARED_KLINE_PATHS = new Set([
   "/fapi/v1/klines",
   "/fapi/v1/markPriceKlines",
+  "/api/v3/klines",
 ]);
 
 export function sharedKlineRequestPlan({
