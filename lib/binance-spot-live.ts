@@ -12,6 +12,28 @@ export class BinanceSpotError extends Error {
 
 type SpotCredentials = { apiKey: string; secretKey: string };
 
+type PublicCacheEntry<T> = { expiresAt: number; value?: T; pending?: Promise<T> };
+const publicCache = new Map<string, PublicCacheEntry<unknown>>();
+
+async function cachedPublic<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const existing = publicCache.get(key) as PublicCacheEntry<T> | undefined;
+  if (existing && existing.expiresAt > now) {
+    if (existing.pending) return existing.pending;
+    if (existing.value !== undefined) return existing.value;
+  }
+  const pending = loader();
+  publicCache.set(key, { expiresAt: now + ttlMs, pending });
+  try {
+    const value = await pending;
+    publicCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+    return value;
+  } catch (error) {
+    if (publicCache.get(key)?.pending === pending) publicCache.delete(key);
+    throw error;
+  }
+}
+
 function spotBaseUrl() {
   const proxy = (env as unknown as { NQ_BINANCE_PROXY_URL?: string }).NQ_BINANCE_PROXY_URL?.replace(/\/$/, "");
   return proxy ? `${proxy}/spot` : SPOT_DIRECT_BASE_URL;
@@ -75,36 +97,46 @@ export async function getBinanceSpotAccount(credentials: SpotCredentials) {
 }
 
 export async function getBinanceSpotTickerPrice(symbol: string) {
-  const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/price?symbol=${encodeURIComponent(symbol.toUpperCase())}`);
-  const payload = await json<{ symbol?: string; price?: string }>(response);
-  const price = Number(payload.price);
-  if (!response.ok || !Number.isFinite(price) || price <= 0) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 现货价格`, response.status || 502);
-  return price;
+  const normalized = symbol.toUpperCase();
+  return cachedPublic(`price:${normalized}`, 1_000, async () => {
+    const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/price?symbol=${encodeURIComponent(normalized)}`);
+    const payload = await json<{ symbol?: string; price?: string }>(response);
+    const price = Number(payload.price);
+    if (!response.ok || !Number.isFinite(price) || price <= 0) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 现货价格`, response.status || 502);
+    return price;
+  });
 }
 
 export async function getBinanceSpotTicker24h(symbol: string) {
-  const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.toUpperCase())}`);
-  const payload = await json<{ symbol?: string; lastPrice?: string; highPrice?: string; lowPrice?: string; priceChangePercent?: string; quoteVolume?: string }>(response);
-  if (!response.ok) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 24小时行情`, response.status || 502);
-  return {
-    symbol: String(payload.symbol || symbol).toUpperCase(),
-    lastPrice: Number(payload.lastPrice),
-    highPrice: Number(payload.highPrice),
-    lowPrice: Number(payload.lowPrice),
-    priceChangePercent: Number(payload.priceChangePercent),
-    quoteVolume: Number(payload.quoteVolume),
-  };
+  const normalized = symbol.toUpperCase();
+  return cachedPublic(`ticker24h:${normalized}`, 5_000, async () => {
+    const response = await fetchWithTimeout(`${spotBaseUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(normalized)}`);
+    const payload = await json<{ symbol?: string; lastPrice?: string; highPrice?: string; lowPrice?: string; priceChangePercent?: string; quoteVolume?: string }>(response);
+    if (!response.ok) throw new BinanceSpotError(payload.msg || `无法取得 ${symbol} 24小时行情`, response.status || 502);
+    return {
+      symbol: String(payload.symbol || symbol).toUpperCase(),
+      lastPrice: Number(payload.lastPrice),
+      highPrice: Number(payload.highPrice),
+      lowPrice: Number(payload.lowPrice),
+      priceChangePercent: Number(payload.priceChangePercent),
+      quoteVolume: Number(payload.quoteVolume),
+    };
+  });
 }
 
 export async function getBinanceSpotKlines(symbol: string, interval: "3d" | "1w", limit = 52) {
   const cappedLimit = Math.max(2, Math.min(52, Math.trunc(limit)));
   const proxy = spotProxyUrl();
-  const response = await fetchWithTimeout(proxy
-    ? `${proxy}/market/spot-klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${cappedLimit}`
-    : `${spotBaseUrl()}/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${cappedLimit}`);
-  const payload = await json<unknown>(response);
-  if (!response.ok || !Array.isArray(payload)) throw new BinanceSpotError(`无法取得现货${interval}行情`, response.status || 502);
-  return payload.map((row) => Array.isArray(row) ? { high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) } : null).filter((row): row is { high: number; low: number; close: number } => !!row && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+  const normalized = symbol.toUpperCase();
+  const ttlMs = interval === "1w" ? 10 * 60_000 : 60_000;
+  return cachedPublic(`klines:${normalized}:${interval}:${cappedLimit}`, ttlMs, async () => {
+    const response = await fetchWithTimeout(proxy
+      ? `${proxy}/market/spot-klines?symbol=${encodeURIComponent(normalized)}&interval=${interval}&limit=${cappedLimit}`
+      : `${spotBaseUrl()}/api/v3/klines?symbol=${encodeURIComponent(normalized)}&interval=${interval}&limit=${cappedLimit}`);
+    const payload = await json<unknown>(response);
+    if (!response.ok || !Array.isArray(payload)) throw new BinanceSpotError(`无法取得现货${interval}行情`, response.status || 502);
+    return payload.map((row) => Array.isArray(row) ? { high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) } : null).filter((row): row is { high: number; low: number; close: number } => !!row && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+  });
 }
 
 export type SpotOrderRequest = {

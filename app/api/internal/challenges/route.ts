@@ -37,6 +37,8 @@ export async function POST(request: Request) {
   for (const challenge of challenges) {
     try {
       const filledBuys = await db.select().from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.side, "BUY"), eq(challengeOrders.status, "FILLED"))).limit(100);
+      const activeOrders = await db.select({ symbol: challengeOrders.symbol }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(500);
+      const activeOrderSymbols = new Set(activeOrders.map((order) => order.symbol));
       const automaticExits: Array<Record<string, unknown>> = [];
       for (const order of filledBuys) {
         const entry = Number(order.averagePrice);
@@ -68,8 +70,7 @@ export async function POST(request: Request) {
           const scanOffset = Math.floor(Date.now() / 5_000) % Math.max(1, whitelist.length);
           const scanRows = Array.from({ length: Math.min(scanLimit, whitelist.length) }, (_, index) => whitelist[(scanOffset + index) % whitelist.length]);
           for (const row of scanRows) {
-            const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
-            if (existing.length) continue;
+            if (activeOrderSymbols.has(row.symbol)) continue;
             const ticker = await getBinanceSpotTicker24h(row.symbol).catch(() => null);
             if (!ticker) continue;
             const threeDay = await getBinanceSpotKlines(row.symbol, "3d", 1).catch(() => []);
@@ -160,8 +161,7 @@ export async function POST(request: Request) {
         const scanOffset = Math.floor(Date.now() / 5_000) % Math.max(1, whitelist.length);
         const scanRows = Array.from({ length: Math.min(scanLimit, whitelist.length) }, (_, index) => whitelist[(scanOffset + index) % whitelist.length]);
         for (const row of scanRows) {
-          const existing = await db.select({ id: challengeOrders.id }).from(challengeOrders).where(and(eq(challengeOrders.challengeId, challenge.id), eq(challengeOrders.symbol, row.symbol), inArray(challengeOrders.status, ["PENDING", "NEW", "PARTIALLY_FILLED", "FILLED"]))).limit(1);
-          if (existing.length) {
+          if (activeOrderSymbols.has(row.symbol)) {
             strategyDiagnostics.push({ symbol: row.symbol, action: "HOLD", reason: "已有挑战订单，等待成交或退出" });
             continue;
           }
