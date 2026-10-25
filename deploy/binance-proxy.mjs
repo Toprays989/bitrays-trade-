@@ -46,7 +46,7 @@ const TARGETS = {
 };
 const MARKET_STREAM_URL =
   "wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s/!ticker@arr/!forceOrder@arr";
-const SPOT_KLINE_STREAM_URL = "wss://stream.binance.com:9443/stream";
+const SPOT_KLINE_STREAM_URL = "wss://stream.binance.com:9443/stream?streams=!ticker@arr";
 const BOOK_STREAM_URL = "wss://fstream.binance.com/public/stream";
 const BOOK_WATCH_TTL_MS = 2 * 60_000;
 const BOOK_WATCH_LIMIT = 100;
@@ -900,9 +900,8 @@ function syncSpotKlineSubscriptions() {
   const desired = [...spotKlineSubscriptions];
   if (spotKlineSocket?.readyState !== WebSocket.OPEN) return;
   const additions = desired.filter((key) => !spotKlineSocket.subscribed?.has(key));
-  if (!spotKlineSocket.subscribed?.has("!ticker@arr")) {
-    spotKlineSocket.send(JSON.stringify({ method: "SUBSCRIBE", params: ["!ticker@arr"], id: "nq-spot-ticker" }));
-  }
+  // !ticker@arr is fixed in the combined-stream URL. Binance does not
+  // reliably emit it when added later through SUBSCRIBE on this socket.
   sendSpotKlineSubscription("SUBSCRIBE", additions);
   if (!spotKlineSocket.subscribed) spotKlineSocket.subscribed = new Set();
   spotKlineSocket.subscribed.add("!ticker@arr");
