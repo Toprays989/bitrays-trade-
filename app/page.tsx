@@ -13959,30 +13959,12 @@ export default function Home() {
                       </b>
                       <small>USDT · 已实现</small>
                     </article>
-                    <article className="overview-kpi-card balance-kpi">
-                      <span>交易账户资产</span>
-                      <b>{overviewMetrics.accountBalanceAvailable ? overviewMetrics.accountBalance.toFixed(2) : "--"}</b>
-                      <small className={overviewMetrics.accountBalanceComplete ? "" : "warning-text"}>
-                        {overviewMetrics.eligibleAccountCount === 0
-                          ? "暂无已启用且验证通过的实盘子账户"
-                          : `可用 ${overviewMetrics.accountBalanceAvailable ? overviewMetrics.accountAvailableBalance.toFixed(2) : "--"} · ${overviewMetrics.freshAccountCount}/${overviewMetrics.eligibleAccountCount} 个账户实时同步${overviewMetrics.accountBalanceComplete ? "" : " · 当前展示最近快照"}`}
-                      </small>
-                    </article>
-                    <article className="overview-kpi-card unrealized-kpi">
-                      <span>未实现盈亏</span>
-                      <b className={overviewMetrics.unrealizedPnl >= 0 ? "positive" : "negative"}>
-                        {overviewMetrics.unrealizedPnlAvailable
-                          ? `${overviewMetrics.unrealizedPnl >= 0 ? "+" : ""}${overviewMetrics.unrealizedPnl.toFixed(2)}`
-                          : "--"}
-                      </b>
-                      <small className={overviewMetrics.unrealizedPnlAvailable ? "" : "warning-text"}>
-                        USDT · {overviewMetrics.unrealizedPnlAvailable ? "Binance 账户快照" : "账户资金快照待同步"}
-                      </small>
-                    </article>
                   </div>
                 </section>
 
-                <section className="overview-strategy-funnel panel" aria-label="各策略今日成交漏斗">
+                <details className="overview-strategy-funnel overview-collapsible panel">
+                  <summary>策略成交漏斗 <small>点击查看今日授权、成交和阻断明细</small></summary>
+                  <div className="overview-collapsible-body">
                   <div className="overview-strategy-funnel-head">
                     <div>
                       <span className="overview-module-kicker">STRATEGY FUNNEL</span>
@@ -14077,7 +14059,8 @@ export default function Home() {
                     </table>
                   </div>
                   <p>眼睛确认表示量价事实成立，大脑结构通过表示方向与时机初审成立；只有费用后净期望通过并取得执行授权，才进入委托漏斗。右侧“成交、仍工作、撤单、未委托”仅按执行授权轨迹互斥归类；“行情暂不可用”只统计基础设施与数据新鲜度问题，正常等待闭合K线或证据不足不再混入系统卡点。</p>
-                </section>
+                  </div>
+                </details>
 
                 <section className="overview-profit-funnel panel" aria-label="真实利润漏斗">
                   <div className="overview-profit-funnel-head">
@@ -14340,7 +14323,9 @@ export default function Home() {
                     {" · "}{overview?.rateLimit?.source === "BINANCE_PROXY" ? "统一代理实时值" : "备用计数"}
                   </span>
                   <span className={overview?.systemStatus?.healthy ? "positive" : "warning-text"}>{overviewBusy ? "同步中" : overview?.systemStatus?.healthy ? "系统运行正常" : "系统状态待检查"}</span>
-                  <div className="overview-system-traffic">
+                  <details className="overview-system-traffic">
+                    <summary>展开流量与权重明细</summary>
+                    <div className="overview-system-traffic-grid">
                     <span>大户接口 5分钟 <b>{overview?.traffic?.futuresData?.upstreamRequests ?? 0} / {overview?.traffic?.futuresData?.requestLimit ?? 800}</b></span>
                     <span>
                       近1小时爆仓{" "}
@@ -14400,7 +14385,8 @@ export default function Home() {
                       {" · "}重复上游 {overview?.traffic?.klineWeightAudit?.duplicateRequestGroupCount ?? 0} 组
                       {" · "}{overview?.traffic?.klineWeightAudit?.scheduleReviewRequired ? "达到证据门槛，需人工复核调度" : "仅观察，不调整调度"}
                     </span>
-                  </div>
+                    </div>
+                  </details>
                 </section>
 
                 <section className="two-col">

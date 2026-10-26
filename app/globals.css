@@ -8256,6 +8256,21 @@ nav::-webkit-scrollbar-thumb {
 .overview-strategy-funnel > p {
   margin: 0;
 }
+.overview-collapsible > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 15px;
+}
+.overview-collapsible > summary small {
+  margin-left: 8px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.overview-collapsible-body {
+  display: grid;
+  gap: 12px;
+}
 .overview-account-scope {
   display: flex;
   align-items: center;
@@ -9916,15 +9931,24 @@ nav::-webkit-scrollbar-thumb {
 }
 .overview-system-traffic {
   grid-column: 1 / -1;
+  display: block;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.overview-system-traffic > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.overview-system-traffic-grid {
   display: flex;
   align-items: center;
   gap: 10px 22px;
   padding-top: 8px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
   flex-wrap: wrap;
 }
-.overview-system-traffic b {
+.overview-system-traffic-grid b {
   color: var(--text);
   font-weight: 650;
 }
