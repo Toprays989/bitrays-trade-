@@ -352,77 +352,34 @@ def download_current_backup(client: paramiko.SSHClient, target: Path) -> str:
     command = r'''set -Eeuo pipefail
 root=/opt/nexus-quant-contract-trader
 snapshot="$(mktemp -d "$root/backups/.preflight-snapshot.XXXXXX")"
+stopped=0
 cleanup_snapshot() {
   resolved="$(readlink -f "$snapshot")"
   case "$resolved" in
     "$root"/backups/.preflight-snapshot.*) rm -rf -- "$resolved" ;;
     *) echo "拒绝清理范围外备份快照" >&2; return 92 ;;
   esac
-  docker exec nexus-quant-contract-trader sh -c 'rm -f /tmp/nq-preflight-backup-*.sqlite' >/dev/null 2>&1 || true
+  if [ "$stopped" = 1 ]; then
+    docker start nexus-quant-contract-trader >/dev/null
+  fi
 }
 trap cleanup_snapshot EXIT INT TERM
 mkdir -p "$snapshot/data"
+# The production D1 file can grow to hundreds of MB.  A live node:sqlite
+# backup can wait indefinitely behind the worker's write transaction.  Stop
+# the single app container briefly and copy the bind-mounted database files;
+# this gives a consistent snapshot and keeps the backup gate deterministic.
+if [ "$(docker inspect -f '{{.State.Running}}' nexus-quant-contract-trader)" = true ]; then
+  docker stop -t 30 nexus-quant-contract-trader >/dev/null
+  stopped=1
+fi
 (
   cd "$root/data"
   find . -type f \
-    ! -name '*.sqlite' \
     ! -name '*.sqlite-wal' \
     ! -name '*.sqlite-shm' \
     -print0 | tar --null -T - -cf -
 ) | tar -xf - -C "$snapshot/data"
-
-docker exec -i nexus-quant-contract-trader node --no-warnings - <<'NODE' |
-const fs = require("node:fs");
-const path = require("node:path");
-const { DatabaseSync, backup } = require("node:sqlite");
-const files = [];
-const persistenceRoots = [
-  "/var/lib/nexus-quant/wrangler",
-  // Backup bridge for the currently running pre-isolation release.
-  "/app/.wrangler",
-];
-const walk = (root) => {
-  if (!fs.existsSync(root)) return;
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const full = path.join(root, entry.name);
-    if (entry.isDirectory()) walk(full);
-    else if (entry.name.endsWith(".sqlite")) files.push(full);
-  }
-};
-for (const root of persistenceRoots) walk(root);
-(async () => {
-  for (const [index, file] of files.entries()) {
-    const sourceRoot = persistenceRoots.find(
-      (root) => file === root || file.startsWith(`${root}${path.sep}`),
-    );
-    if (!sourceRoot) throw new Error("SQLite 不属于允许的持久化目录");
-    const relative = path.relative(sourceRoot, file);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
-      throw new Error("SQLite 路径越界");
-    const destination = `/tmp/nq-preflight-backup-${process.pid}-${index}.sqlite`;
-    const source = new DatabaseSync(file, { readOnly: true });
-    try {
-      source.exec("PRAGMA busy_timeout=5000");
-      await backup(source, destination);
-    } finally {
-      source.close();
-    }
-    process.stdout.write(`${relative}\t${destination}\n`);
-  }
-})().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-NODE
-while IFS=$'\t' read -r relative temporary; do
-  [ -n "$relative" ]
-  [ -n "$temporary" ]
-  case "$relative" in /*|../*|*/../*) echo "SQLite 相对路径越界" >&2; exit 93 ;; esac
-  destination="$snapshot/data/wrangler/$relative"
-  mkdir -p "$(dirname "$destination")"
-  docker cp "nexus-quant-contract-trader:$temporary" "$destination" >/dev/null
-  docker exec nexus-quant-contract-trader rm -f -- "$temporary"
-done
 
 [ "$(find "$snapshot/data" -type f -name '*.sqlite' | wc -l)" -ge 1 ]
 GZIP=-1 tar -chzf - -C "$root" current -C "$snapshot" data
