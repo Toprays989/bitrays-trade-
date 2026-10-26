@@ -587,7 +587,12 @@ function HistoryTable({
                 <td className={roi === null ? "" : roi >= 0 ? "positive" : "negative"}>
                   {roi === null ? "--" : `${signed(roi, 3)}%`}
                 </td>
-                <td>{reasonLabel(row.reason)}</td>
+                <td>
+                  <span>{reasonLabel(row.reason, row.reasonDetail)}</span>
+                  {row.reasonDetail && (
+                    <small className="position-exit-reason-detail">{row.reasonDetail}</small>
+                  )}
+                </td>
               </tr>
             );
           })}
@@ -693,7 +698,7 @@ function ReductionTable({
                   </>
                 ) : (
                   <>
-                    <td>{reasonLabel(item.reason)}</td>
+                    <td>{reasonLabel(item.reason, null)}</td>
                     <td className={accounting.pnl >= 0 ? "positive" : "negative"}>
                       {signed(accounting.pnl, 4)} USDT
                       <small>{accounting.exactNetAvailable ? " 净" : " 毛·待补"}</small>
@@ -770,7 +775,8 @@ function SideTag({ side }: { side: "LONG" | "SHORT" }) {
   );
 }
 
-function reasonLabel(value: string) {
+function reasonLabel(value: string, detail: string | null) {
+  if (detail) return detail;
   return (
     {
       TAKE_PROFIT: "止盈",

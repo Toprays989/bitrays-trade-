@@ -21,8 +21,37 @@ export type ClosedPositionHistoryRow = {
   entryCommissionAllocated: number | null;
   fundingIncome: number | null;
   reason: string;
+  reasonDetail: string | null;
   closedAt: string | number;
 };
+
+function exitTrigger(reduction: LivePositionReduction | undefined) {
+  if (!reduction?.responseJson) return null;
+  try {
+    const response = JSON.parse(reduction.responseJson) as Record<string, unknown>;
+    const trigger = typeof response.protectionTrigger === "string"
+      ? response.protectionTrigger
+      : null;
+    if (trigger === "ENTRY_THESIS_INVALIDATION" || response.structureExit === true)
+      return "ENTRY_THESIS_INVALIDATION";
+    return trigger;
+  } catch {
+    return null;
+  }
+}
+
+export function positionExitReasonDetail(trigger: string | null | undefined) {
+  return {
+    ENTRY_THESIS_INVALIDATION: "结构失效提前退出（正常风控）",
+    CAPITAL_PRESERVATION_HARD_STOP: "本金保护硬止损",
+    THREE_MINUTE_HARD_STOP: "动态硬止损",
+    THREE_MINUTE_LOCKED_LOSS_FLOOR: "锁定亏损保护",
+    EVIDENCE_RISK_FULL_EXIT: "证据风险退出",
+    EVIDENCE_RISK_PARTIAL_REDUCTION: "证据风险减仓",
+    THREE_MINUTE_LOCKED_PROFIT_FLOOR: "锁定利润保护",
+    THREE_MINUTE_DYNAMIC_PROFIT_TARGET: "动态止盈",
+  }[String(trigger)] ?? null;
+}
 
 export function buildClosedPositionHistory(
   positions: LivePosition[],
@@ -87,6 +116,14 @@ export function buildClosedPositionHistory(
             0,
           )
         : null;
+      const latestReduction = legs
+        .slice()
+        .sort(
+          (left, right) =>
+            new Date(right.createdAt).getTime() -
+            new Date(left.createdAt).getTime(),
+        )[0];
+      const detail = positionExitReasonDetail(exitTrigger(latestReduction));
 
       return {
         positionId: position.id,
@@ -108,6 +145,7 @@ export function buildClosedPositionHistory(
           position.exitReason ??
           legs.at(-1)?.reason ??
           "EXTERNAL",
+        reasonDetail: detail,
         closedAt: position.closedAt ?? position.updatedAt,
       };
     })

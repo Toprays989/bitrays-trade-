@@ -2445,6 +2445,7 @@ nav::-webkit-scrollbar-thumb {
 .manual-board-toggle button { width: 100%; height: 34px; color: var(--board-muted); background: #101a2d; border: 1px solid var(--board-border); border-radius: 8px; cursor: pointer; font-size: 12px; }
 .manual-board-toggle button[aria-pressed="true"] { color: var(--board-green); border-color: rgba(69, 211, 165, .5); background: rgba(69, 211, 165, .1); }
 .manual-board-trailing { display: flex; align-items: center; gap: 10px; margin: 0 17px 7px; padding: 7px 9px; color: #b4c6e9; background: rgba(72, 124, 226, .1); border-radius: 7px; font-size: 10px; }
+.position-exit-reason-detail { display: block; margin-top: 3px; color: #8fa7cc; font-size: 11px; }
 .manual-board-trailing label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .manual-board-trailing input { width: 48px; height: 24px; padding: 0 4px; color: var(--board-text); background: #0d1628; border: 1px solid var(--board-border); border-radius: 5px; font-size: 11px; }
 .manual-board-modal-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: rgba(3, 8, 18, .76); backdrop-filter: blur(5px); }

@@ -256,6 +256,7 @@ export type LivePositionReduction = {
       | null;
   };
   reason: "STOP_LOSS" | "TAKE_PROFIT" | "TRAILING_STOP" | "MANUAL" | "EXTERNAL";
+  responseJson?: string | null;
   createdAt: string | number;
 };
 
