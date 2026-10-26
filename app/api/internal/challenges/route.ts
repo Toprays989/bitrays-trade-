@@ -10,6 +10,16 @@ import { planSpotChallengeLongEntry } from "../../../../lib/spot-challenge-strat
 
 export const dynamic = "force-dynamic";
 
+function challengeClientOrderId(
+  challengeId: number,
+  symbol: string,
+  kind = "auto",
+) {
+  const safeSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+  // Binance Spot accepts at most 36 ASCII characters for this identifier.
+  return `challenge-${challengeId}-${kind}-${Date.now().toString(36)}-${safeSymbol}`;
+}
+
 function authorized(request: Request) {
   const expected = (env as unknown as { NQ_INTERNAL_RISK_TOKEN?: string }).NQ_INTERNAL_RISK_TOKEN ?? "";
   return expected.length >= 32 && request.headers.get("authorization") === `Bearer ${expected}`;
@@ -78,7 +88,7 @@ export async function POST(request: Request) {
             if (!weekly.length) continue;
             const signal = planSpotChallengeLongEntry({ capitalUsdt: challenge.capitalUsdt, riskUsedPercent: 0, price: ticker.lastPrice, dayHigh: ticker.highPrice, dayLow: ticker.lowPrice, threeDayHigh: threeDay[0]?.high, threeDayLow: threeDay[0]?.low, weekHigh: Math.max(...weekly.map((item) => item.high)), weekLow: Math.min(...weekly.map((item) => item.low)), btcChangePercent: btc?.priceChangePercent ?? 0, maxEntryPrice: 20 });
             if (signal.action !== "BUY") continue;
-            const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${row.symbol}` });
+            const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: row.symbol, side: "BUY", quoteOrderQty: signal.quoteOrderUsdt, clientOrderId: challengeClientOrderId(challenge.id, row.symbol) });
             automaticOrders.push({ symbol: row.symbol, signal, result });
             if (automaticOrders.length >= 2) break;
           }
@@ -188,7 +198,7 @@ export async function POST(request: Request) {
         // Randomize only among candidates that already passed every whitelist,
         // position, BTC-correlation and risk gate. Never bypass a gate.
         for (const candidate of buyCandidates.sort(() => Math.random() - 0.5).slice(0, 2)) {
-          const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: candidate.symbol, side: "BUY", quoteOrderQty: candidate.quoteOrderUsdt, clientOrderId: `challenge-${challenge.id}-auto-${Date.now()}-${candidate.symbol}` });
+          const result = await submitAutomaticOrder({ challengeId: challenge.id, symbol: candidate.symbol, side: "BUY", quoteOrderQty: candidate.quoteOrderUsdt, clientOrderId: challengeClientOrderId(challenge.id, candidate.symbol) });
           automaticOrders.push({ symbol: candidate.symbol, signal: candidate.signal, result });
         }
       }

@@ -419,7 +419,8 @@ function klineWeight(limit) {
   return 10;
 }
 
-function estimatedWeight(pathname, searchParams) {
+function estimatedWeight(pathname, searchParams, method = "GET") {
+  const normalizedMethod = String(method || "GET").toUpperCase();
   const hasSymbol = Boolean(searchParams.get("symbol"));
   if ([
     "/futures/data/openInterestHist",
@@ -436,6 +437,15 @@ function estimatedWeight(pathname, searchParams) {
     return klineWeight(Number(searchParams.get("limit") || 500));
   if (pathname === "/api/v3/klines")
     return klineWeight(Number(searchParams.get("limit") || 500));
+  // Spot endpoints do not use the futures fallback weights. Keep their
+  // request costs explicit so ordinary account checks and order retries do
+  // not exhaust the local admission budget before Binance's header arrives.
+  if (pathname === "/api/v3/time") return 1;
+  if (pathname === "/api/v3/order") return normalizedMethod === "GET" ? 4 : 1;
+  if (pathname === "/api/v3/openOrders") return searchParams.get("symbol") ? 6 : 80;
+  if (pathname === "/api/v3/ticker/price") return searchParams.get("symbol") ? 1 : 2;
+  if (pathname === "/api/v3/ticker/24hr") return searchParams.get("symbol") ? 1 : 40;
+  if (pathname === "/api/v3/exchangeInfo") return searchParams.get("symbol") ? 1 : 20;
   if (pathname === "/fapi/v1/exchangeInfo" || pathname === "/fapi/v1/time") return 1;
   if (pathname === "/fapi/v1/listenKey") return 1;
   if (pathname === "/fapi/v3/account" || pathname === "/fapi/v3/positionRisk") return 5;
@@ -448,7 +458,7 @@ function estimatedWeight(pathname, searchParams) {
 
 function reserveWeight(method, pathname, searchParams, criticalOverride = false) {
   const now = Date.now();
-  const weight = estimatedWeight(pathname, searchParams);
+  const weight = estimatedWeight(pathname, searchParams, method);
   const totalLocalUsedWeight = localUsedWeight(now);
   const tradingUsedWeight = localUsedWeight(now, "TRADING");
   const observationUsedWeight = localUsedWeight(now, "OBSERVATION");
