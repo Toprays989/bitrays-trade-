@@ -189,8 +189,6 @@ import { SemiAutoOpportunityView } from "./components/semi-auto-opportunity-view
 import { MovingProtectionReviewCard } from "./components/moving-protection-review-card";
 import { DailyOperationsView } from "./components/daily-operations-view";
 import { ManualOrderBoard } from "./components/manual-order-board";
-import { ChallengeView } from "./components/challenge-view";
-import { WallTrendView, type WallTrendHandoff } from "./components/wall-trend-view";
 import { PaperTradingView } from "./components/paper-trading-view";
 
 type Market = {
@@ -259,8 +257,6 @@ const menuGroups = [
       ["overview", "⌁", "运营总览"],
       ["market", "⌇", "行情中心"],
       ["manual", "↗", "人工下单"],
-      ["challenge", "◇", "挑战赛"],
-      ["wallTrend", "⇅", "买卖墙趋势"],
       ["paperTrading", "▣", "虚拟盘测试"],
       ["semiAuto", "◉", "半自动下单"],
       ["position", "◫", "仓位管理"],
@@ -298,8 +294,6 @@ const pagePermissions: Record<string, string> = {
   overview: "trade:dashboard:view",
   market: "trade:dashboard:view",
   manual: "trade:manual:create",
-  challenge: "trade:dashboard:view",
-  wallTrend: "trade:dashboard:view",
   paperTrading: "trade:dashboard:view",
   semiAuto: "trade:manual:create",
   pool: "trade:symbol_pool:view",
@@ -339,7 +333,6 @@ function WorkspacePage({
   executionEnvironment: "LIVE" | "PAPER";
   setExecutionEnvironment: (environment: "LIVE" | "PAPER") => void;
 }) {
-  const [wallTrendHandoff, setWallTrendHandoff] = useState<WallTrendHandoff | null>(null);
   const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
   const [orderType, setOrderType] = useState<"市价单" | "限价单">("市价单");
   const [orderAccountId, setOrderAccountId] = useState("");
@@ -4200,23 +4193,6 @@ function WorkspacePage({
       />
     );
 
-  if (active === "challenge")
-    return <ChallengeView setToast={setToast} executionEnvironment={executionEnvironment} setExecutionEnvironment={setExecutionEnvironment} />;
-
-  if (active === "wallTrend")
-    return (
-      <WallTrendView
-        setToast={setToast}
-        executionEnvironment={executionEnvironment}
-        setExecutionEnvironment={setExecutionEnvironment}
-        onHandoff={(handoff) => {
-          setWallTrendHandoff(handoff);
-          setActive("semiAuto");
-          setToast(`${handoff.symbol} 已转交半自动大脑，需选择已发布大脑并人工确认`);
-        }}
-      />
-    );
-
   if (active === "paperTrading")
     return <PaperTradingView setToast={setToast} />;
 
@@ -5185,7 +5161,7 @@ function WorkspacePage({
   if (active === "semiAuto")
     return (
       <SemiAutoOpportunityView
-        key={wallTrendHandoff?.requestId ?? "semi-auto"}
+        key="semi-auto"
         strategies={visibleConfiguredStrategies}
         markets={pool}
         credentials={exchangeCredentials}
@@ -5198,7 +5174,6 @@ function WorkspacePage({
           setToast(message);
           void Promise.all([loadPositions(true), loadLiveOrders(true)]);
         }}
-        handoff={wallTrendHandoff}
         executionEnvironment={executionEnvironment}
       />
     );

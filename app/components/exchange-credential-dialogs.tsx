@@ -90,7 +90,6 @@ export function CredentialEditorDialog({
               <option value="BINANCE_USDM">Binance 合约 USDM</option>
               <option value="BINANCE_SPOT">Binance 现货 Spot</option>
             </select>
-            <small>现货挑战赛必须选择 Binance 现货 Spot。</small>
           </label>
           <label>
             <span>API Key</span>

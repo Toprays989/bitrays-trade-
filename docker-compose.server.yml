@@ -226,7 +226,6 @@ services:
       timeout: 3s
       retries: 6
       start_period: 20s
-
   manual-grid-runner:
     image: nexus-quant-contract-trader:latest
     container_name: nexus-quant-contract-trader-manual-grid
@@ -251,24 +250,3 @@ services:
       retries: 6
       start_period: 20s
 
-  spot-challenge-runner:
-    image: nexus-quant-contract-trader:latest
-    container_name: nexus-quant-contract-trader-spot-challenge
-    restart: unless-stopped
-    entrypoint: ["node", "/app/deploy/spot-challenge-runner.mjs"]
-    env_file:
-      - /opt/nexus-quant-contract-trader/secrets/runtime.env
-    environment:
-      NQ_SPOT_CHALLENGE_URL: http://nexus-quant:3000/api/internal/challenges
-      NQ_SPOT_CHALLENGE_INTERVAL_MS: "5000"
-      NQ_SPOT_CHALLENGE_TIMEOUT_MS: "30000"
-      NQ_SPOT_CHALLENGE_HEALTH_PORT: "3210"
-    depends_on:
-      nexus-quant:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3210/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 5s
-      timeout: 3s
-      retries: 6
-      start_period: 20s

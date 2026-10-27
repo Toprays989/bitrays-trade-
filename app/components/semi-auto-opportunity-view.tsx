@@ -8,7 +8,6 @@ import {
 import type { ExchangeCredential } from "../client/workspace-model";
 import type { LivePosition } from "../client/workspace-model";
 import type { ConfiguredStrategy } from "../client/strategy-view";
-import type { WallTrendHandoff } from "./wall-trend-view";
 import {
   buildSemiAutoRiskLevels,
   type SemiAutoStoredPlan,
@@ -193,18 +192,14 @@ export function SemiAutoOpportunityView({
   positions: LivePosition[];
   canCreate: boolean;
   onExecuted: (message: string) => void;
-  handoff?: WallTrendHandoff | null;
   executionEnvironment?: "LIVE" | "PAPER";
 }) {
   const [strategyId, setStrategyId] = useState("");
-  const [symbol, setSymbol] = useState(handoff?.symbol ?? "");
-  const [direction, setDirection] = useState<"LONG" | "SHORT">(handoff?.direction ?? "LONG");
-  const [wallTrendOrigin] = useState<{ symbol: string; direction: "LONG" | "SHORT" } | null>(
-    handoff ? { symbol: handoff.symbol, direction: handoff.direction } : null,
-  );
+  const [symbol, setSymbol] = useState("");
+  const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
   const [horizon, setHorizon] =
     useState<"SCALP" | "INTRADAY" | "SWING">("INTRADAY");
-  const [thesis, setThesis] = useState(handoff?.thesis ?? "");
+  const [thesis, setThesis] = useState("");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -426,7 +421,6 @@ export function SemiAutoOpportunityView({
           direction,
           thesis,
           horizon,
-          ...(wallTrendOrigin ? { wallTrendOrigin } : {}),
         }),
       });
       const result = (await readJsonResponse(response)) as Analysis & {
@@ -445,29 +439,6 @@ export function SemiAutoOpportunityView({
 
   async function confirmOrder() {
     if (!analysis?.plan || submitting) return;
-    if (wallTrendOrigin) {
-      try {
-        const wallResponse = await fetch("/api/control/wall-trend", { cache: "no-store" });
-        const wallPayload = (await wallResponse.json()) as {
-          rows?: Array<{ symbol?: string; businessState?: string; direction?: string }>;
-        };
-        const wall = wallPayload.rows?.find((row) => row.symbol === wallTrendOrigin.symbol);
-        if (
-          !wallResponse.ok ||
-          !wall ||
-          wall.businessState !== "READY" ||
-          wall.direction !== wallTrendOrigin.direction ||
-          analysis.plan.symbol !== wallTrendOrigin.symbol ||
-          analysis.plan.direction !== wallTrendOrigin.direction
-        ) {
-          setConfirming(false);
-          return setError("买卖墙趋势已失效或方向已变化，请返回监控页重新确认后再分析");
-        }
-      } catch {
-        setConfirming(false);
-        return setError("无法复核买卖墙趋势当前状态，本次不会提交订单");
-      }
-    }
     const plan = analysis.plan;
     if (executionEnvironment === "PAPER") {
       if (!paperAccountId) return setError("请选择 PAPER 虚拟账户");
@@ -477,7 +448,7 @@ export function SemiAutoOpportunityView({
         const response = await fetch("/api/control/paper-trading", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "PLACE_ORDER", accountId: paperAccountId, symbol: plan.symbol, direction: plan.direction, orderType: plan.orderType, quantity: plan.quantity, limitPrice: plan.limitPrice, sourceBusiness: wallTrendOrigin ? "WALL_TREND_SEMI_AUTO" : "SEMI_AUTO", strategyId: analysis.brain.id, brainKey: analysis.brain.brainKey, configVersion: analysis.brain.configVersion, analysisRecordId: analysis.analysisRecordId }),
+          body: JSON.stringify({ action: "PLACE_ORDER", accountId: paperAccountId, symbol: plan.symbol, direction: plan.direction, orderType: plan.orderType, quantity: plan.quantity, limitPrice: plan.limitPrice, sourceBusiness: "SEMI_AUTO", strategyId: analysis.brain.id, brainKey: analysis.brain.brainKey, configVersion: analysis.brain.configVersion, analysisRecordId: analysis.analysisRecordId }),
         });
         const result = (await readJsonResponse(response)) as { error?: string; order?: { status?: string } };
         if (!response.ok) throw new Error(result.error ?? "半自动虚拟订单提交失败");
